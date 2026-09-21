@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { fromEmail, resend, resendConfigured } from "@/lib/resend";
+import { fromEmail, resend, resendConfigured, sendingIdentity } from "@/lib/resend";
 import { audit, canEdit, crmUser } from "@/lib/crm-auth";
 
 function clean(value: unknown, fallback = "") { return typeof value === "string" ? value.trim() : fallback; }
@@ -32,7 +32,8 @@ async function readAll(account:{id:string;email:string;role:string}) {
   ]);
   const segmentRows=segments.results.map((s:Record<string,unknown>)=>({...s,recipientCount:contacts.filter(c=>audienceMatch(c,`segment:${s.id}`,s as unknown as SegmentRule)).length}));
   const duplicates:Array<{a:number;b:number;reason:string}>=[];for(let i=0;i<contacts.length;i++)for(let j=i+1;j<contacts.length;j++){const a=contacts[i],b=contacts[j];if(`${a.firstName} ${a.lastName}`.toLowerCase()===`${b.firstName} ${b.lastName}`.toLowerCase()&&(a.company===b.company||!a.company||!b.company))duplicates.push({a:Number(a.id),b:Number(b.id),reason:"Same name and company"});}
-  return { contacts, activities: activities.results, tasks: tasks.results.map((t: Record<string, unknown>) => ({ ...t, completed: Boolean(t.completed) })), campaigns: campaigns.results, segments:segmentRows, suppressions:suppressions.results, campaignEvents:campaignEvents.results, companies:companies.results,consentEvents:consentEvents.results,duplicates,account, integration: { connected: resendConfigured(), fromEmail: env.RESEND_FROM_EMAIL || null, webhookReady: Boolean(env.RESEND_WEBHOOK_SECRET) } };
+  const identity=await sendingIdentity();
+  return { contacts, activities: activities.results, tasks: tasks.results.map((t: Record<string, unknown>) => ({ ...t, completed: Boolean(t.completed) })), campaigns: campaigns.results, segments:segmentRows, suppressions:suppressions.results, campaignEvents:campaignEvents.results, companies:companies.results,consentEvents:consentEvents.results,duplicates,account, integration: { connected: Boolean(resendConfigured()&&identity.fromEmail), fromEmail: identity.fromEmail?fromEmail(identity):null, webhookReady: Boolean(env.RESEND_WEBHOOK_SECRET) } };
 }
 async function syncCampaign(id: number) {
   const campaign = await campaignRow(id); if (!campaign) throw new Error("Campaign not found.");
@@ -113,13 +114,15 @@ export async function POST(request: Request) {
     if (body.action === "syncCampaignAudience") return Response.json(await syncCampaign(Number(body.id)));
     if (body.action === "sendCampaignTest") {
       const campaign=await campaignRow(Number(body.id)), to=clean(body.to).toLowerCase(); if(!campaign||!to.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/))return Response.json({error:"Choose a campaign and enter a valid test address."},{status:400});
-      const result=await resend("/emails",{method:"POST",body:JSON.stringify({from:fromEmail(),to:[to],subject:`[TEST] ${campaign.subject}`,html:`<div style=\"background:#eef2ff;padding:12px;font:14px sans-serif\">Test preview — this message was not sent to the campaign audience.</div>${String(campaign.html).replaceAll("{{{RESEND_UNSUBSCRIBE_URL}}}","#")}`,text:campaign.textBody||undefined,tags:[{name:"campaign_id",value:String(campaign.id)}]})}); return Response.json({id:result.id});
+      const identity=await sendingIdentity();
+      const result=await resend("/emails",{method:"POST",body:JSON.stringify({from:fromEmail(identity),to:[to],reply_to:identity.replyToEmail||undefined,subject:`[TEST] ${campaign.subject}`,html:`<div style=\"background:#eef2ff;padding:12px;font:14px sans-serif\">Test preview — this message was not sent to the campaign audience.</div>${String(campaign.html).replaceAll("{{{RESEND_UNSUBSCRIBE_URL}}}","#")}`,text:campaign.textBody||undefined,tags:[{name:"campaign_id",value:String(campaign.id)}]})}); return Response.json({id:result.id});
     }
     if (body.action === "scheduleCampaign") {
       const id=Number(body.id); let campaign=await campaignRow(id); if(!campaign)return Response.json({error:"Campaign not found."},{status:404}); if(!campaign.resendSegmentId){await syncCampaign(id);campaign=await campaignRow(id);}
       const scheduledAt=clean(body.scheduledAt); if(scheduledAt&&new Date(scheduledAt).getTime()<=Date.now()+60000)return Response.json({error:"Schedule at least two minutes in the future."},{status:400});
       const html=String(campaign?.html||"")+(!String(campaign?.html||"").includes("RESEND_UNSUBSCRIBE_URL")?'<p style="margin-top:32px;font-size:12px;color:#64748b"><a href="{{{RESEND_UNSUBSCRIBE_URL}}}">Unsubscribe</a></p>':"");
-      const result=await resend("/broadcasts",{method:"POST",body:JSON.stringify({segment_id:campaign?.resendSegmentId,from:fromEmail(),name:campaign?.name,subject:campaign?.subject,html,text:campaign?.textBody||undefined,send:true,scheduled_at:scheduledAt?new Date(scheduledAt).toISOString():undefined})});
+      const identity=await sendingIdentity();
+      const result=await resend("/broadcasts",{method:"POST",body:JSON.stringify({segment_id:campaign?.resendSegmentId,from:fromEmail(identity),reply_to:identity.replyToEmail||undefined,name:campaign?.name,subject:campaign?.subject,html,text:campaign?.textBody||undefined,send:true,scheduled_at:scheduledAt?new Date(scheduledAt).toISOString():undefined})});
       await env.DB.prepare("UPDATE campaigns SET resend_broadcast_id=?,status=?,scheduled_at=?,sent_at=?,updated_at=datetime('now') WHERE id=?").bind(String(result.id||""),scheduledAt?"Scheduled":"Sending",scheduledAt||null,scheduledAt?null:new Date().toISOString(),id).run(); return Response.json({id:result.id,status:scheduledAt?"Scheduled":"Sending"});
     }
     return Response.json({error:"Unknown action."},{status:400});

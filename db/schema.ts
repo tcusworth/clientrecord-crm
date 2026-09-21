@@ -58,3 +58,15 @@ export const auditLogs = sqliteTable("audit_logs", { id: integer("id").primaryKe
 export const integrationAccounts = sqliteTable("integration_accounts", { id: integer("id").primaryKey({ autoIncrement: true }), provider: text("provider").notNull().unique(), accountEmail: text("account_email").notNull().default(""), accessToken: text("access_token").notNull(), refreshToken: text("refresh_token").notNull(), expiresAt: text("expires_at").notNull(), scopes: text("scopes").notNull().default(""), lastSyncedAt: text("last_synced_at"), createdAt: text("created_at").notNull(), updatedAt: text("updated_at").notNull() });
 export const oauthStates = sqliteTable("oauth_states", { id: integer("id").primaryKey({ autoIncrement: true }), state: text("state").notNull().unique(), actorEmail: text("actor_email").notNull(), expiresAt: text("expires_at").notNull(), createdAt: text("created_at").notNull() });
 export const syncRecords = sqliteTable("sync_records", { id: integer("id").primaryKey({ autoIncrement: true }), provider: text("provider").notNull(), externalId: text("external_id").notNull().unique(), itemType: text("item_type").notNull(), contactId: integer("contact_id").references(() => contacts.id), occurredAt: text("occurred_at").notNull(), createdAt: text("created_at").notNull() });
+export const brandSettings = sqliteTable("brand_settings", {
+  id: integer("id").primaryKey(),
+  businessName: text("business_name").notNull().default(""),
+  logoUrl: text("logo_url").notNull().default(""),
+  fromName: text("from_name").notNull().default(""),
+  fromEmail: text("from_email").notNull().default(""),
+  replyToEmail: text("reply_to_email").notNull().default(""),
+  sendingDomain: text("sending_domain").notNull().default(""),
+  physicalAddress: text("physical_address").notNull().default(""),
+  updatedBy: text("updated_by").notNull().default(""),
+  updatedAt: text("updated_at").notNull(),
+});

@@ -3,7 +3,7 @@ import { env } from "cloudflare:workers";
 type Json = Record<string, unknown>;
 
 export function resendConfigured() {
-  return Boolean(env.RESEND_API_KEY && env.RESEND_FROM_EMAIL);
+  return Boolean(env.RESEND_API_KEY);
 }
 
 export async function resend(path: string, init: RequestInit = {}) {
@@ -21,7 +21,33 @@ export async function resend(path: string, init: RequestInit = {}) {
   return data;
 }
 
-export function fromEmail() {
+export type SendingIdentity = {
+  businessName: string;
+  logoUrl: string;
+  fromName: string;
+  fromEmail: string;
+  replyToEmail: string;
+  sendingDomain: string;
+  physicalAddress: string;
+};
+
+export async function sendingIdentity(): Promise<SendingIdentity> {
+  const row = await env.DB.prepare("SELECT business_name AS businessName,logo_url AS logoUrl,from_name AS fromName,from_email AS fromEmail,reply_to_email AS replyToEmail,sending_domain AS sendingDomain,physical_address AS physicalAddress FROM brand_settings WHERE id=1").first<SendingIdentity>();
+  const fallback = String(env.RESEND_FROM_EMAIL || "");
+  const match = fallback.match(/^\s*(.*?)\s*<([^>]+)>\s*$/);
+  return {
+    businessName: row?.businessName || "",
+    logoUrl: row?.logoUrl || "",
+    fromName: row?.fromName || match?.[1] || "",
+    fromEmail: row?.fromEmail || match?.[2] || fallback,
+    replyToEmail: row?.replyToEmail || "",
+    sendingDomain: row?.sendingDomain || "",
+    physicalAddress: row?.physicalAddress || "",
+  };
+}
+
+export function fromEmail(identity?: Pick<SendingIdentity, "fromName" | "fromEmail">) {
+  if (identity?.fromEmail) return identity.fromName ? `${identity.fromName} <${identity.fromEmail}>` : identity.fromEmail;
   if (!env.RESEND_FROM_EMAIL) throw new Error("A verified Resend sender has not been configured.");
   return env.RESEND_FROM_EMAIL;
 }

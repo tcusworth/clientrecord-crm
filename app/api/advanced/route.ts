@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { audit, canAdmin, canEdit, crmUser } from "@/lib/crm-auth";
-import { fromEmail, resend, resendConfigured } from "@/lib/resend";
+import { fromEmail, resend, resendConfigured, sendingIdentity } from "@/lib/resend";
 
 const clean = (value: unknown, fallback = "") => typeof value === "string" ? value.trim() : fallback;
 const money = (value: unknown) => Math.max(0, Math.round(Number(value || 0) * 100));
@@ -47,8 +47,9 @@ async function runDue(user: NonNullable<Awaited<ReturnType<typeof crmUser>>>) {
     if (!step) { await env.DB.prepare("UPDATE automation_enrollments SET status='Completed',completed_at=datetime('now') WHERE id=?").bind(row.id).run(); continue; }
     if (step.action_type === "email") {
       if (!resendConfigured()) continue;
+      const identity = await sendingIdentity();
       const body = String(step.body || "").replaceAll("{{first_name}}", String(row.firstName));
-      await resend("/emails", { method: "POST", body: JSON.stringify({ from: fromEmail(), to: [row.email], subject: step.subject, html: `<div style=\"font:16px Arial;line-height:1.6\">${body.replaceAll("\n", "<br>")}</div>` }) });
+      await resend("/emails", { method: "POST", body: JSON.stringify({ from: fromEmail(identity), to: [row.email], reply_to: identity.replyToEmail || undefined, subject: step.subject, html: `<div style=\"font:16px Arial;line-height:1.6\">${body.replaceAll("\n", "<br>")}</div>` }) });
       await env.DB.prepare("INSERT INTO activities (contact_id,type,note,happened_at) VALUES (?,'Automated email',?,datetime('now'))").bind(row.contactId, `Sequence email: ${step.subject}`).run();
     } else {
       await env.DB.prepare("INSERT INTO tasks (contact_id,title,due_date,owner,status,completed) VALUES (?,?,date('now'),?,'Open',0)").bind(row.contactId, step.task_title || "Sequence follow-up", user.email).run();
