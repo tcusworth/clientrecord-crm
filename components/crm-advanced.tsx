@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { SalesFoundation } from "@/components/sales-foundation";
 import { BarChart3, Check, Clock3, DollarSign, MailCheck, Play, Plus, RefreshCw, ShieldCheck, UserCog } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -29,7 +30,7 @@ export function AdvancedWorkspace({section,contacts}:{section:string;contacts:Co
  if(!data)return <Panel><div className="p-8 text-sm text-slate-500">{error||"Loading sales workspace…"}</div></Panel>;
  const editable=data.account.role!=="viewer", admin=data.account.role==="owner"||data.account.role==="admin";
  return <div>{error&&<div className="mb-4 rounded-xl bg-red-50 p-4 text-sm text-red-700">{error}</div>}{notice&&<div className="mb-4 flex items-center gap-2 rounded-xl bg-emerald-50 p-4 text-sm text-emerald-800"><Check size={16}/>{notice}</div>}
-  {section==="deals"&&<Deals data={data} contacts={contacts} disabled={!editable||busy} run={run}/>} 
+  {section==="deals"&&<SalesFoundation section="deals"/>}
   {section==="automations"&&<Automations data={data} contacts={contacts} disabled={!editable||busy} run={run}/>} 
   {section==="reports"&&<Reports data={data} disabled={!editable||busy} run={run}/>} 
   {section==="integrations"&&<Integrations data={data} disabled={!editable||busy} sync={async()=>{setBusy(true);setError("");try{const r=await fetch("/api/microsoft/sync",{method:"POST"}),result=await r.json();if(!r.ok)throw new Error(result.error);await load();setNotice(`${result.messages} emails and ${result.meetings} meetings synchronized`)}catch(e){setError(e instanceof Error?e.message:"Synchronization failed.")}finally{setBusy(false)}}}/>} 

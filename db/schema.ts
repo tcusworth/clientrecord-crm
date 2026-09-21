@@ -1,4 +1,4 @@
-import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { index, uniqueIndex, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 export const contacts = sqliteTable("contacts", {
   id: integer("id").primaryKey({ autoIncrement: true }), firstName: text("first_name").notNull(), lastName: text("last_name").notNull(),
@@ -38,15 +38,38 @@ export const consentEvents = sqliteTable("consent_events", {
   id: integer("id").primaryKey({ autoIncrement: true }), email: text("email").notNull(), status: text("status").notNull(), reason: text("reason").notNull(), source: text("source").notNull(), occurredAt: text("occurred_at").notNull(),
 });
 export const companies = sqliteTable("companies", {
+  website: text("website").notNull().default(""), industry: text("industry").notNull().default(""), tier: text("tier").notNull().default(""), territory: text("territory").notNull().default(""), owner: text("owner").notNull().default(""), tags: text("tags").notNull().default("[]"),
+  fitScore: integer("fit_score").notNull().default(0), fitReason: text("fit_reason").notNull().default(""), intentScore: integer("intent_score").notNull().default(0), temperature: text("temperature").notNull().default("Cold"),
   id: integer("id").primaryKey({ autoIncrement: true }), name: text("name").notNull().unique(), stage: text("stage").notNull().default("Prospect"), notes: text("notes").notNull().default(""), primaryContactId: integer("primary_contact_id").references(() => contacts.id), updatedAt: text("updated_at").notNull(),
 });
 
 export const deals = sqliteTable("deals", {
+  pipelineKey: text("pipeline_key").notNull().default("default"), stageKey: text("stage_key"), closedReason: text("closed_reason").notNull().default(""), stageEnteredAt: text("stage_entered_at").notNull().default(""),
   id: integer("id").primaryKey({ autoIncrement: true }), name: text("name").notNull(), company: text("company").notNull().default(""), contactId: integer("contact_id").references(() => contacts.id),
   stage: text("stage").notNull().default("Qualified"), owner: text("owner").notNull().default("Trevor"), value: integer("value").notNull().default(0), probability: integer("probability").notNull().default(25),
   nextStep: text("next_step").notNull().default(""), closeDate: text("close_date"), leadSource: text("lead_source").notNull().default("Direct"), status: text("status").notNull().default("Open"),
   createdAt: text("created_at").notNull(), updatedAt: text("updated_at").notNull(),
 });
+export const salesPipelines = sqliteTable("sales_pipelines", {
+  id: text("id").primaryKey(), name: text("name").notNull(), stages: text("stages").notNull(), updatedAt: text("updated_at").notNull(),
+});
+export const accountStakeholders = sqliteTable("account_stakeholders", {
+  id: integer("id").primaryKey({autoIncrement:true}), companyId: integer("company_id").notNull().references(()=>companies.id), contactId: integer("contact_id").notNull().references(()=>contacts.id),
+  role: text("role").notNull(), notes: text("notes").notNull().default(""),
+},t=>[uniqueIndex("stakeholder_account_contact").on(t.companyId,t.contactId)]);
+export const accountSignals = sqliteTable("account_signals", {
+  id: text("id").primaryKey(), companyId: integer("company_id").notNull().references(()=>companies.id), kind: text("kind").notNull(), summary: text("summary").notNull(), evidence: text("evidence").notNull(),
+  points: integer("points").notNull(), active: integer("active").notNull().default(1), occurredAt: text("occurred_at").notNull(), createdAt: text("created_at").notNull(), actor: text("actor").notNull(),
+},t=>[index("signals_company_active").on(t.companyId,t.active)]);
+export const qualificationAlerts = sqliteTable("qualification_alerts", {
+  id: integer("id").primaryKey({autoIncrement:true}), companyId: integer("company_id").notNull().references(()=>companies.id), owner: text("owner").notNull(), message: text("message").notNull(), createdAt: text("created_at").notNull(), readAt: text("read_at"),
+},t=>[index("alerts_owner_read").on(t.owner,t.readAt)]);
+export const dealStageHistory = sqliteTable("deal_stage_history", {
+  id: integer("id").primaryKey({autoIncrement:true}), dealId: integer("deal_id").notNull().references(()=>deals.id), fromStage: text("from_stage").notNull(), toStage: text("to_stage").notNull(), fromPipeline: text("from_pipeline").notNull(), toPipeline: text("to_pipeline").notNull(), reason: text("reason").notNull().default(""), actor: text("actor").notNull(), happenedAt: text("happened_at").notNull(),
+},t=>[index("history_deal_date").on(t.dealId,t.happenedAt)]);
+export const dealTasks = sqliteTable("deal_tasks", {
+  id: integer("id").primaryKey({autoIncrement:true}), dealId: integer("deal_id").notNull().references(()=>deals.id), title: text("title").notNull(), owner: text("owner").notNull(), dueDate: text("due_date").notNull(), completed: integer("completed").notNull().default(0), createdAt: text("created_at").notNull(),
+},t=>[index("deal_tasks_deal_due").on(t.dealId,t.dueDate)]);
 export const leadSources = sqliteTable("lead_sources", { id: integer("id").primaryKey({ autoIncrement: true }), name: text("name").notNull().unique(), spend: integer("spend").notNull().default(0), createdAt: text("created_at").notNull(), updatedAt: text("updated_at").notNull() });
 export const automationSequences = sqliteTable("automation_sequences", { id: integer("id").primaryKey({ autoIncrement: true }), name: text("name").notNull(), triggerType: text("trigger_type").notNull().default("Manual"), triggerValue: text("trigger_value").notNull().default(""), active: integer("active", { mode: "boolean" }).notNull().default(true), createdAt: text("created_at").notNull(), updatedAt: text("updated_at").notNull() });
 export const automationSteps = sqliteTable("automation_steps", { id: integer("id").primaryKey({ autoIncrement: true }), sequenceId: integer("sequence_id").notNull().references(() => automationSequences.id), stepOrder: integer("step_order").notNull(), delayDays: integer("delay_days").notNull().default(0), actionType: text("action_type").notNull(), subject: text("subject").notNull().default(""), body: text("body").notNull().default(""), taskTitle: text("task_title").notNull().default("") });

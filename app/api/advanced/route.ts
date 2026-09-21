@@ -8,7 +8,7 @@ const stages = ["Qualified", "Discovery", "Proposal", "Negotiation", "Won", "Los
 
 async function readAll(user: NonNullable<Awaited<ReturnType<typeof crmUser>>>) {
   const [deals, sources, sequences, steps, enrollments, fields, values, members, logs, integration] = await Promise.all([
-    env.DB.prepare("SELECT d.id,d.name,d.company,d.contact_id AS contactId,d.stage,d.owner,d.value,d.probability,d.next_step AS nextStep,d.close_date AS closeDate,d.lead_source AS leadSource,d.status,d.created_at AS createdAt,d.updated_at AS updatedAt,c.first_name||' '||c.last_name AS contactName FROM deals d LEFT JOIN contacts c ON c.id=d.contact_id ORDER BY d.updated_at DESC").all(),
+    env.DB.prepare("SELECT d.id,d.name,d.company,d.contact_id AS contactId,d.stage,d.owner,d.value,d.probability,d.next_step AS nextStep,d.close_date AS closeDate,d.lead_source AS leadSource,CASE WHEN d.stage_key IS NULL AND d.stage IN ('Won','Lost') THEN d.stage ELSE d.status END AS status,d.created_at AS createdAt,d.updated_at AS updatedAt,c.first_name||' '||c.last_name AS contactName FROM deals d LEFT JOIN contacts c ON c.id=d.contact_id ORDER BY d.updated_at DESC").all(),
     env.DB.prepare("SELECT id,name,spend,created_at AS createdAt,updated_at AS updatedAt FROM lead_sources ORDER BY name").all(),
     env.DB.prepare("SELECT id,name,trigger_type AS triggerType,trigger_value AS triggerValue,active,created_at AS createdAt,updated_at AS updatedAt FROM automation_sequences ORDER BY created_at DESC").all(),
     env.DB.prepare("SELECT id,sequence_id AS sequenceId,step_order AS stepOrder,delay_days AS delayDays,action_type AS actionType,subject,body,task_title AS taskTitle FROM automation_steps ORDER BY sequence_id,step_order").all(),
@@ -20,22 +20,22 @@ async function readAll(user: NonNullable<Awaited<ReturnType<typeof crmUser>>>) {
     env.DB.prepare("SELECT provider,account_email AS accountEmail,last_synced_at AS lastSyncedAt FROM integration_accounts WHERE provider='microsoft'").first<Record<string, unknown>>(),
   ]);
   const dealRows = deals.results as Array<Record<string, unknown>>;
-  const won = dealRows.filter(d => d.stage === "Won");
+  const won = dealRows.filter(d => d.status === "Won");
   const sourceNames = new Set<string>([...sources.results.map(s => String(s.name)), ...dealRows.map(d => String(d.leadSource || "Direct"))]);
   const sourceROI = Array.from(sourceNames).map(name => {
     const related = dealRows.filter(d => String(d.leadSource || "Direct") === name);
-    const revenue = related.filter(d => d.stage === "Won").reduce((sum, d) => sum + Number(d.value || 0), 0);
+    const revenue = related.filter(d => d.status === "Won").reduce((sum, d) => sum + Number(d.value || 0), 0);
     const spend = Number(sources.results.find(s => s.name === name)?.spend || 0);
-    return { name, leads: related.length, won: related.filter(d => d.stage === "Won").length, revenue, spend, roi: spend ? ((revenue - spend) / spend) * 100 : null };
+    return { name, leads: related.length, won: related.filter(d => d.status === "Won").length, revenue, spend, roi: spend ? ((revenue - spend) / spend) * 100 : null };
   });
-  const pipeline = stages.map(stage => ({ stage, count: dealRows.filter(d => d.stage === stage).length, value: dealRows.filter(d => d.stage === stage).reduce((sum, d) => sum + Number(d.value || 0), 0) }));
+  const pipeline = Array.from(new Set(dealRows.map(d=>String(d.stage)))).map(stage => ({ stage, count: dealRows.filter(d => d.stage === stage).length, value: dealRows.filter(d => d.stage === stage).reduce((sum, d) => sum + Number(d.value || 0), 0) }));
   return {
     account: user,
     deals: dealRows, sources: sources.results, sequences: sequences.results.map(s => ({ ...s, active: Boolean(s.active), steps: steps.results.filter(x => x.sequenceId === s.id) })),
     enrollments: enrollments.results, fields: fields.results.map(f => ({ ...f, options: JSON.parse(String(f.options || "[]")) })), values: values.results,
     members: members.results.map(m => ({ ...m, active: Boolean(m.active) })), logs: canAdmin(user.role) ? logs.results : [],
     integration: { provider: "Microsoft 365", configured: Boolean(env.MS_CLIENT_ID && env.MS_CLIENT_SECRET && env.CRM_TOKEN_ENCRYPTION_KEY), connected: Boolean(integration), accountEmail: integration?.accountEmail || "", lastSyncedAt: integration?.lastSyncedAt || null },
-    reports: { openPipeline: dealRows.filter(d => !["Won", "Lost"].includes(String(d.stage))).reduce((sum, d) => sum + Number(d.value || 0), 0), weightedPipeline: dealRows.filter(d => !["Won", "Lost"].includes(String(d.stage))).reduce((sum, d) => sum + Number(d.value || 0) * Number(d.probability || 0) / 100, 0), wonRevenue: won.reduce((sum, d) => sum + Number(d.value || 0), 0), winRate: dealRows.length ? won.length / dealRows.length * 100 : 0, pipeline, sourceROI },
+    reports: { openPipeline: dealRows.filter(d => d.status === "Open").reduce((sum, d) => sum + Number(d.value || 0), 0), weightedPipeline: dealRows.filter(d => d.status === "Open").reduce((sum, d) => sum + Number(d.value || 0) * Number(d.probability || 0) / 100, 0), wonRevenue: won.reduce((sum, d) => sum + Number(d.value || 0), 0), winRate: dealRows.length ? won.length / dealRows.length * 100 : 0, pipeline, sourceROI },
   };
 }
 
@@ -74,18 +74,7 @@ export async function POST(request: Request) {
   const body = await request.json() as Record<string, unknown>, action = clean(body.action);
   if (!canEdit(user.role)) return Response.json({ error: "Your viewer role is read-only." }, { status: 403 });
   try {
-    if (action === "createDeal") {
-      const name = clean(body.name); if (!name) return Response.json({ error: "Deal name is required." }, { status: 400 });
-      const result = await env.DB.prepare("INSERT INTO deals (name,company,contact_id,stage,owner,value,probability,next_step,close_date,lead_source,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,datetime('now'),datetime('now'))").bind(name, clean(body.company), Number(body.contactId) || null, clean(body.stage, "Qualified"), clean(body.owner, user.email), money(body.value), Math.min(100, Math.max(0, Number(body.probability) || 25)), clean(body.nextStep), clean(body.closeDate) || null, clean(body.leadSource, "Direct"), "Open").run();
-      await audit(user, action, "deal", result.meta.last_row_id, `Created deal ${name}`, body); return Response.json({ id: result.meta.last_row_id }, { status: 201 });
-    }
-    if (action === "updateDeal") {
-      const id = Number(body.id), stage = stages.includes(clean(body.stage)) ? clean(body.stage) : "Qualified";
-      await env.DB.prepare("UPDATE deals SET stage=?,owner=?,value=?,probability=?,next_step=?,close_date=?,lead_source=?,status=?,updated_at=datetime('now') WHERE id=?").bind(stage, clean(body.owner, user.email), money(body.value), Math.min(100, Math.max(0, Number(body.probability) || 0)), clean(body.nextStep), clean(body.closeDate) || null, clean(body.leadSource, "Direct"), stage === "Won" ? "Won" : stage === "Lost" ? "Lost" : "Open", id).run();
-      const deal = await env.DB.prepare("SELECT contact_id AS contactId FROM deals WHERE id=?").bind(id).first<{contactId:number|null}>();
-      if(deal?.contactId){const matched=await env.DB.prepare("SELECT s.id,(SELECT delay_days FROM automation_steps WHERE sequence_id=s.id ORDER BY step_order LIMIT 1) AS delayDays FROM automation_sequences s WHERE s.active=1 AND s.trigger_type='Deal stage' AND lower(s.trigger_value)=lower(?)").bind(stage).all();for(const sequence of matched.results){const exists=await env.DB.prepare("SELECT id FROM automation_enrollments WHERE sequence_id=? AND contact_id=? AND status='Active'").bind(sequence.id,deal.contactId).first();if(!exists)await env.DB.prepare("INSERT INTO automation_enrollments (sequence_id,contact_id,current_step,status,next_run_at,enrolled_at) VALUES (?,?,0,'Active',datetime('now',?),datetime('now'))").bind(sequence.id,deal.contactId,`+${Math.max(0,Number(sequence.delayDays)||0)} days`).run();}}
-      await audit(user, action, "deal", id, `Updated deal stage to ${stage}`, body); return Response.json({ status: "updated" });
-    }
+    if (action === "createDeal" || action === "updateDeal") return Response.json({error:"Use the configurable pipeline workspace to create or update deals."},{status:409});
     if (action === "saveSource") {
       const name = clean(body.name); if (!name) return Response.json({ error: "Source name is required." }, { status: 400 });
       await env.DB.prepare("INSERT INTO lead_sources (name,spend,created_at,updated_at) VALUES (?,?,datetime('now'),datetime('now')) ON CONFLICT(name) DO UPDATE SET spend=excluded.spend,updated_at=datetime('now')").bind(name, money(body.spend)).run();
