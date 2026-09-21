@@ -3,7 +3,7 @@ import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 export const contacts = sqliteTable("contacts", {
   id: integer("id").primaryKey({ autoIncrement: true }), firstName: text("first_name").notNull(), lastName: text("last_name").notNull(),
   email: text("email").notNull().unique(), company: text("company").notNull().default(""), title: text("title").notNull().default(""),
-  phone: text("phone").notNull().default(""),
+  phone: text("phone").notNull().default(""), location: text("location").notNull().default(""), notes: text("notes").notNull().default(""),
   stage: text("stage").notNull().default("Lead"), tags: text("tags", { mode: "json" }).$type<string[]>().notNull().default([]),
   lastContact: text("last_contact"), nextFollowUp: text("next_follow_up"), subscribed: integer("subscribed", { mode: "boolean" }).notNull().default(true),
   suppressionReason: text("suppression_reason"), suppressedAt: text("suppressed_at"),
@@ -11,7 +11,7 @@ export const contacts = sqliteTable("contacts", {
   createdAt: text("created_at").notNull(), updatedAt: text("updated_at").notNull().default(""),
 });
 export const activities = sqliteTable("activities", { id: integer("id").primaryKey({ autoIncrement: true }), contactId: integer("contact_id").notNull().references(() => contacts.id), type: text("type").notNull(), note: text("note").notNull(), happenedAt: text("happened_at").notNull() });
-export const tasks = sqliteTable("tasks", { id: integer("id").primaryKey({ autoIncrement: true }), contactId: integer("contact_id").notNull().references(() => contacts.id), title: text("title").notNull(), dueDate: text("due_date").notNull(), completed: integer("completed", { mode: "boolean" }).notNull().default(false) });
+export const tasks = sqliteTable("tasks", { id: integer("id").primaryKey({ autoIncrement: true }), contactId: integer("contact_id").notNull().references(() => contacts.id), title: text("title").notNull(), dueDate: text("due_date").notNull(), owner: text("owner").notNull().default("Trevor"), status: text("status").notNull().default("Open"), completed: integer("completed", { mode: "boolean" }).notNull().default(false) });
 export const campaigns = sqliteTable("campaigns", {
   id: integer("id").primaryKey({ autoIncrement: true }), name: text("name").notNull(), subject: text("subject").notNull(),
   previewText: text("preview_text").notNull().default(""), html: text("html").notNull().default(""), textBody: text("text_body").notNull().default(""),
@@ -26,11 +26,17 @@ export const campaignEvents = sqliteTable("campaign_events", {
 });
 export const segments = sqliteTable("segments", {
   id: integer("id").primaryKey({ autoIncrement: true }), name: text("name").notNull().unique(),
-  stage: text("stage").notNull().default("Any"), tag: text("tag").notNull().default(""), company: text("company").notNull().default(""),
+  stage: text("stage").notNull().default("Any"), tag: text("tag").notNull().default(""), company: text("company").notNull().default(""), location: text("location").notNull().default(""),
   subscription: text("subscription").notNull().default("Subscribed"), inactivityDays: integer("inactivity_days").notNull().default(0),
   createdAt: text("created_at").notNull(), updatedAt: text("updated_at").notNull(),
 });
 export const suppressions = sqliteTable("suppressions", {
   id: integer("id").primaryKey({ autoIncrement: true }), email: text("email").notNull().unique(),
   reason: text("reason").notNull(), source: text("source").notNull().default("Manual"), createdAt: text("created_at").notNull(), removedAt: text("removed_at"),
+});
+export const consentEvents = sqliteTable("consent_events", {
+  id: integer("id").primaryKey({ autoIncrement: true }), email: text("email").notNull(), status: text("status").notNull(), reason: text("reason").notNull(), source: text("source").notNull(), occurredAt: text("occurred_at").notNull(),
+});
+export const companies = sqliteTable("companies", {
+  id: integer("id").primaryKey({ autoIncrement: true }), name: text("name").notNull().unique(), stage: text("stage").notNull().default("Prospect"), notes: text("notes").notNull().default(""), primaryContactId: integer("primary_contact_id").references(() => contacts.id), updatedAt: text("updated_at").notNull(),
 });
