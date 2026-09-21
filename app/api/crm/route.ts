@@ -1,8 +1,8 @@
 import { env } from "cloudflare:workers";
 import { fromEmail, resend, resendConfigured } from "@/lib/resend";
+import { audit, canEdit, crmUser } from "@/lib/crm-auth";
 
 function clean(value: unknown, fallback = "") { return typeof value === "string" ? value.trim() : fallback; }
-function signedIn(request: Request) { const id=request.headers.get("oai-authenticated-user-id"),email=request.headers.get("oai-authenticated-user-email")?.toLowerCase();const allowed=String(env.CRM_ALLOWED_EMAILS||"tcusworth@gmail.com").toLowerCase().split(",").map(v=>v.trim()); return id&&email&&allowed.includes(email)?{id,email}:null; }
 type SegmentRule={id:number;name:string;stage:string;tag:string;company:string;location:string;subscription:string;inactivityDays:number};
 function audienceMatch(contact: Record<string, unknown>, audience: string, segment?: SegmentRule|null) {
   if (!Boolean(contact.subscribed)) return false;
@@ -12,13 +12,13 @@ function audienceMatch(contact: Record<string, unknown>, audience: string, segme
   return true;
 }
 async function contactRows() {
-  const result = await env.DB.prepare("SELECT id, first_name AS firstName, last_name AS lastName, email, company, title, phone, location, notes, stage, tags, last_contact AS lastContact, next_follow_up AS nextFollowUp, subscribed, suppression_reason AS suppressionReason, suppressed_at AS suppressedAt, resend_id AS resendId, resend_synced_at AS resendSyncedAt, created_at AS createdAt, updated_at AS updatedAt FROM contacts ORDER BY last_name, first_name").all();
+  const result = await env.DB.prepare("SELECT id, first_name AS firstName, last_name AS lastName, email, company, title, phone, location, notes, lead_source AS leadSource, stage, tags, last_contact AS lastContact, next_follow_up AS nextFollowUp, subscribed, suppression_reason AS suppressionReason, suppressed_at AS suppressedAt, resend_id AS resendId, resend_synced_at AS resendSyncedAt, created_at AS createdAt, updated_at AS updatedAt FROM contacts ORDER BY last_name, first_name").all();
   return result.results.map((c: Record<string, unknown>) => ({ ...c, tags: JSON.parse(String(c.tags || "[]")), subscribed: Boolean(c.subscribed) }));
 }
 async function campaignRow(id: number) {
   return await env.DB.prepare("SELECT id, name, subject, preview_text AS previewText, html, text_body AS textBody, status, audience, recipient_count AS recipientCount, resend_segment_id AS resendSegmentId, resend_broadcast_id AS resendBroadcastId, scheduled_at AS scheduledAt, sent_at AS sentAt, delivered_count AS deliveredCount, opened_count AS openedCount, clicked_count AS clickedCount, bounced_count AS bouncedCount, complained_count AS complainedCount, created_at AS createdAt, updated_at AS updatedAt FROM campaigns WHERE id=?").bind(id).first<Record<string, unknown>>();
 }
-async function readAll(account:{id:string;email:string}) {
+async function readAll(account:{id:string;email:string;role:string}) {
   const [contacts, activities, tasks, campaigns, segments, suppressions, campaignEvents, companies, consentEvents] = await Promise.all([
     contactRows(),
     env.DB.prepare("SELECT a.id, a.contact_id AS contactId, a.type, a.note, a.happened_at AS happenedAt, c.first_name || ' ' || c.last_name AS contactName FROM activities a JOIN contacts c ON c.id = a.contact_id ORDER BY a.happened_at DESC LIMIT 100").all(),
@@ -58,18 +58,19 @@ async function syncCampaign(id: number) {
   return { segmentId, recipientCount: contacts.length };
 }
 
-export async function GET(request:Request) { const account=signedIn(request);if(!account)return Response.json({error:"Sign in is required."},{status:401});try { return Response.json(await readAll(account)); } catch { return Response.json({ error: "CRM data is temporarily unavailable." }, { status: 503 }); } }
+export async function GET(request:Request) { const account=await crmUser(request);if(!account)return Response.json({error:"Sign in is required."},{status:401});try { return Response.json(await readAll(account)); } catch { return Response.json({ error: "CRM data is temporarily unavailable." }, { status:503 }); } }
 export async function POST(request: Request) {
   try {
-    if(!signedIn(request))return Response.json({error:"Sign in is required."},{status:401});
+    const account=await crmUser(request);if(!account)return Response.json({error:"Sign in is required."},{status:401});if(!canEdit(account.role))return Response.json({error:"Your viewer role is read-only."},{status:403});
     const body = await request.json() as Record<string, unknown>;
+    await audit(account,String(body.action||"write"),"crm",body.id||body.contactId||body.email||null,`CRM action: ${String(body.action||"write")}`,body);
     if (body.action === "createContact") {
       const firstName=clean(body.firstName), lastName=clean(body.lastName), email=clean(body.email).toLowerCase(); if (!firstName || !lastName || !email) return Response.json({error:"Name and email are required."},{status:400});
       const suppressed=await env.DB.prepare("SELECT reason FROM suppressions WHERE email=? AND removed_at IS NULL").bind(email).first<{reason:string}>();
-      const result = await env.DB.prepare("INSERT INTO contacts (first_name,last_name,email,company,title,phone,location,notes,stage,tags,subscribed,suppression_reason,suppressed_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'),datetime('now'))").bind(firstName,lastName,email,clean(body.company),clean(body.title),clean(body.phone),clean(body.location),clean(body.notes),clean(body.stage,"Lead"),JSON.stringify(clean(body.tags).split(",").map(v=>v.trim()).filter(Boolean)),suppressed?0:1,suppressed?.reason||null,suppressed?new Date().toISOString():null).run(); return Response.json({id:result.meta.last_row_id},{status:201});
+      const result = await env.DB.prepare("INSERT INTO contacts (first_name,last_name,email,company,title,phone,location,notes,lead_source,stage,tags,subscribed,suppression_reason,suppressed_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'),datetime('now'))").bind(firstName,lastName,email,clean(body.company),clean(body.title),clean(body.phone),clean(body.location),clean(body.notes),clean(body.leadSource,"Direct"),clean(body.stage,"Lead"),JSON.stringify(clean(body.tags).split(",").map(v=>v.trim()).filter(Boolean)),suppressed?0:1,suppressed?.reason||null,suppressed?new Date().toISOString():null).run(); return Response.json({id:result.meta.last_row_id},{status:201});
     }
     if(body.action==="updateContact"){
-      const id=Number(body.id),email=clean(body.email).toLowerCase(),tags=clean(body.tags).split(",").map(v=>v.trim()).filter(Boolean);if(!id||!email)return Response.json({error:"Contact and email are required."},{status:400});await env.DB.prepare("UPDATE contacts SET first_name=?,last_name=?,email=?,company=?,title=?,phone=?,location=?,notes=?,stage=?,tags=?,updated_at=datetime('now') WHERE id=?").bind(clean(body.firstName),clean(body.lastName),email,clean(body.company),clean(body.title),clean(body.phone),clean(body.location),clean(body.notes),clean(body.stage,"Lead"),JSON.stringify(tags),id).run();return Response.json({status:"updated"});
+      const id=Number(body.id),email=clean(body.email).toLowerCase(),tags=clean(body.tags).split(",").map(v=>v.trim()).filter(Boolean),stage=clean(body.stage,"Lead");if(!id||!email)return Response.json({error:"Contact and email are required."},{status:400});await env.DB.prepare("UPDATE contacts SET first_name=?,last_name=?,email=?,company=?,title=?,phone=?,location=?,notes=?,lead_source=?,stage=?,tags=?,updated_at=datetime('now') WHERE id=?").bind(clean(body.firstName),clean(body.lastName),email,clean(body.company),clean(body.title),clean(body.phone),clean(body.location),clean(body.notes),clean(body.leadSource,"Direct"),stage,JSON.stringify(tags),id).run();const matched=await env.DB.prepare("SELECT s.id,(SELECT delay_days FROM automation_steps WHERE sequence_id=s.id ORDER BY step_order LIMIT 1) AS delayDays FROM automation_sequences s WHERE s.active=1 AND s.trigger_type='Contact stage' AND lower(s.trigger_value)=lower(?)").bind(stage).all();for(const sequence of matched.results){const exists=await env.DB.prepare("SELECT id FROM automation_enrollments WHERE sequence_id=? AND contact_id=? AND status='Active'").bind(sequence.id,id).first();if(!exists)await env.DB.prepare("INSERT INTO automation_enrollments (sequence_id,contact_id,current_step,status,next_run_at,enrolled_at) VALUES (?,?,0,'Active',datetime('now',?),datetime('now'))").bind(sequence.id,id,`+${Math.max(0,Number(sequence.delayDays)||0)} days`).run();}return Response.json({status:"updated"});
     }
     if (body.action === "createActivity") {
       const contactId=Number(body.contactId), note=clean(body.note), type=clean(body.type,"Note"), today=new Date().toISOString(); if (!contactId || !note) return Response.json({error:"Contact and note are required."},{status:400});
