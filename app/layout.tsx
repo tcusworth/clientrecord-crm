@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Customer CRM",
-  description: "Track customer relationships, follow-ups, and targeted email campaigns.",
+  title: "ClientRecord CRM",
+  description: "Manage client records, relationships, follow-ups, deals, and targeted email campaigns.",
   icons: {
     icon: "/favicon.svg",
     shortcut: "/favicon.svg",
