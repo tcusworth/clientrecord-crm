@@ -18,6 +18,9 @@ export async function POST(request: Request) {
   const columns: Record<string,string> = { "email.delivered":"delivered_count", "email.opened":"opened_count", "email.clicked":"clicked_count", "email.bounced":"bounced_count", "email.complained":"complained_count" };
   const column = columns[event.type];
   if (column) await env.DB.prepare(`UPDATE campaigns SET ${column}=${column}+1,status='Sent',sent_at=COALESCE(sent_at,?),updated_at=datetime('now') WHERE id=?`).bind(event.created_at||new Date().toISOString(),campaign.id).run();
-  if (recipient && (event.type === "email.bounced" || event.type === "email.complained" || event.type === "email.suppressed")) await env.DB.prepare("UPDATE contacts SET subscribed=0 WHERE email=?").bind(recipient.toLowerCase()).run();
+  if (recipient && (event.type === "email.bounced" || event.type === "email.complained" || event.type === "email.suppressed")) {
+    const email=recipient.toLowerCase(),reason=event.type.replace("email.","");
+    await env.DB.batch([env.DB.prepare("INSERT INTO suppressions (email,reason,source,created_at,removed_at) VALUES (?,?,'Resend',datetime('now'),NULL) ON CONFLICT(email) DO UPDATE SET reason=excluded.reason,source='Resend',created_at=datetime('now'),removed_at=NULL").bind(email,reason),env.DB.prepare("UPDATE contacts SET subscribed=0,suppression_reason=?,suppressed_at=datetime('now'),updated_at=datetime('now') WHERE email=?").bind(reason,email)]);
+  }
   return Response.json({ accepted: true });
 }
