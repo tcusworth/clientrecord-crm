@@ -11,6 +11,7 @@ export type CompanyEnrichmentProposal = {
   confidence:number;
   evidence:string[];
 };
+type ApolloOrganization=Record<string,unknown>;
 
 const publicEmailDomains=new Set(["aol.com","gmail.com","googlemail.com","hotmail.com","icloud.com","live.com","mail.com","me.com","msn.com","outlook.com","proton.me","protonmail.com","yahoo.com","ymail.com"]);
 const blockedHosts=new Set(["0.0.0.0","127.0.0.1","localhost","metadata.google.internal"]);
@@ -94,4 +95,27 @@ export async function enrichCompanyWebsite(domain:string,website?:string):Promis
   const evidence=[summary&&"Website description",industry&&String(org.industry||"").trim()?"Organization industry":"",industry&&!String(org.industry||"").trim()?"Industry keywords":"",headquarters&&"Organization address",employees&&"Organization employee data",linkedin&&"LinkedIn company link",logo&&"Website organization image"].filter(Boolean);
   const confidence=Math.min(95,50+(summary?10:0)+(String(org["@type"]||"").toLowerCase().includes("organization")?15:0)+(industry?8:0)+(headquarters?5:0)+(linkedin?5:0));
   return {website:finalUrl,domain:safeDomain,summary,industry,headquarters,linkedin_url:linkedin,logo_url:logo,employee_range:employees,source:finalUrl,confidence,evidence};
+}
+
+function apolloText(value:unknown,max=1200){return String(value??"").trim().slice(0,max)}
+function apolloUrl(value:unknown,base:string){const raw=apolloText(value,1000);if(!raw)return "";return absoluteUrl(/^https?:\/\//i.test(raw)?raw:`https://${raw}`,base)}
+function apolloHeadquarters(org:ApolloOrganization){return [org.city,org.state,org.country].map(value=>apolloText(value,120)).filter(Boolean).join(", ")}
+function apolloEmployees(org:ApolloOrganization){const raw=org.estimated_num_employees??org.employee_count??org.num_employees??org.employee_range;const count=Number(raw);return Number.isFinite(count)&&count>0?`~${Math.round(count).toLocaleString()}`:apolloText(raw,80)}
+
+export async function enrichCompanyApollo(apiKey:string,input:{name:string;domain?:string;website?:string;linkedinUrl?:string}):Promise<CompanyEnrichmentProposal>{
+  const key=apiKey.trim();if(!key)throw new Error("Apollo is not configured. Add APOLLO_API_KEY as a secure Site secret.");
+  const domain=normalizedCompanyDomain(input.domain||input.website),website=apolloUrl(input.website,`https://${domain||"example.com"}`),linkedinUrl=apolloUrl(input.linkedinUrl,website||`https://${domain||"example.com"}`);
+  if(!domain&&!website&&!linkedinUrl)throw new Error("Add a company website or business-email contact before Apollo enrichment.");
+  const url=new URL("https://api.apollo.io/api/v1/organizations/enrich");
+  if(domain)url.searchParams.set("domain",domain);if(website)url.searchParams.set("website",website);if(linkedinUrl)url.searchParams.set("linkedin_url",linkedinUrl);if(input.name.trim())url.searchParams.set("name",input.name.trim().slice(0,240));
+  const response=await fetch(url,{headers:{accept:"application/json","x-api-key":key}});
+  if(response.status===401||response.status===403)throw new Error("Apollo rejected the configured API key or it does not have company-enrichment access.");
+  if(response.status===429)throw new Error("Apollo rate limit reached. Try again in a moment.");
+  if(!response.ok)throw new Error(`Apollo company enrichment failed (HTTP ${response.status}).`);
+  const payload=await response.json() as Record<string,unknown>,org=(payload.organization&&typeof payload.organization==="object"?payload.organization:payload) as ApolloOrganization;
+  if(!org||(!apolloText(org.id)&&!apolloText(org.name)))throw new Error("Apollo did not find a matching company.");
+  const resolvedDomain=normalizedCompanyDomain(org.primary_domain??org.domain??domain),resolvedWebsite=apolloUrl(org.website_url??org.website??website,`https://${resolvedDomain||domain||"example.com"}`),resolvedLinkedIn=apolloUrl(org.linkedin_url??org.linkedin??linkedinUrl,resolvedWebsite||`https://${resolvedDomain||domain||"example.com"}`),logo=apolloUrl(org.logo_url??org.logo,resolvedWebsite||`https://${resolvedDomain||domain||"example.com"}`),summary=apolloText(org.short_description??org.description,1200),industry=apolloText(org.industry,160),headquarters=apolloHeadquarters(org),employees=apolloEmployees(org);
+  const evidence=[industry&&"Apollo industry",headquarters&&"Apollo headquarters",employees&&"Apollo employee estimate",apolloText(org.annual_revenue)&&"Apollo revenue data",apolloText(org.latest_funding_round)&&"Apollo funding data",resolvedLinkedIn&&"Apollo LinkedIn profile",logo&&"Apollo company logo"].filter(Boolean) as string[];
+  const confidence=Math.min(98,72+(resolvedDomain?10:0)+(resolvedWebsite?5:0)+(industry?4:0)+(headquarters?3:0)+(employees?3:0));
+  return {website:resolvedWebsite,domain:resolvedDomain,summary,industry,headquarters,linkedin_url:resolvedLinkedIn,logo_url:logo,employee_range:employees,source:"Apollo organization enrichment",confidence,evidence};
 }

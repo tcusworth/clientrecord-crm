@@ -16,5 +16,6 @@ declare namespace Cloudflare {
     GOOGLE_CLIENT_ID?: string;
     GOOGLE_CLIENT_SECRET?: string;
     OPENAI_API_KEY?: string;
+    APOLLO_API_KEY?: string;
   }
 }

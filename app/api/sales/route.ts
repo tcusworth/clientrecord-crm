@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { can, canAdmin, crmUser } from "@/lib/crm-auth";
 import { defaultPipeline, relationshipRoles, signalPoints, validateStages, type Pipeline } from "@/lib/sales-rules";
-import { chooseCompanyDomain, enrichCompanyWebsite, normalizedCompanyDomain } from "@/lib/company-enrichment";
+import { chooseCompanyDomain, enrichCompanyApollo, enrichCompanyWebsite, normalizedCompanyDomain } from "@/lib/company-enrichment";
 
 type Row=Record<string,unknown>;
 const db=()=>{if(!env.DB)throw new Error("Database is not configured.");return env.DB;};
@@ -76,7 +76,7 @@ export async function GET(request:Request){
       rows("SELECT id,entity_type AS entityType,name,field_key AS fieldKey,field_type AS fieldType,options FROM custom_field_definitions WHERE entity_type='company' ORDER BY name"),
       rows("SELECT definition_id AS definitionId,entity_type AS entityType,entity_id AS entityId,value FROM custom_field_values WHERE entity_type='company'"),
     ]);
-    return Response.json({user,companies,contacts,stakeholders,deals:deals.map(d=>({...d,status:!d.stage_key&&["Won","Lost"].includes(String(d.stage))?d.stage:d.status})),tasks,history,signals,alerts,pipelines:pipe,customFields:customFields.map(field=>({...field,options:JSON.parse(String(field.options||"[]"))})),customFieldValues:customValues,signalPoints,relationshipRoles});
+    return Response.json({user,companies,contacts,stakeholders,deals:deals.map(d=>({...d,status:!d.stage_key&&["Won","Lost"].includes(String(d.stage))?d.stage:d.status})),tasks,history,signals,alerts,pipelines:pipe,customFields:customFields.map(field=>({...field,options:JSON.parse(String(field.options||"[]"))})),customFieldValues:customValues,signalPoints,relationshipRoles,apolloConfigured:Boolean(String((env as unknown as Record<string,unknown>).APOLLO_API_KEY||"").trim())});
   }catch(error){console.error(error);return Response.json({error:"Sales foundation could not load."},{status:503});}
 }
 export async function POST(request:Request){
@@ -90,6 +90,15 @@ export async function POST(request:Request){
       const emails=await rows("SELECT email FROM contacts WHERE lower(company)=lower(?) AND email<>''",String(company.name));
       const domain=chooseCompanyDomain(company.domain,company.website,emails.map(row=>row.email));
       const proposal=await enrichCompanyWebsite(domain,str(company.website));
+      return Response.json({proposal});
+    }
+    if(action==="previewApolloCompanyEnrichment"){
+      const id=number(b.company_id,1,1e12),company=await db().prepare("SELECT id,name,website,domain,linkedin_url FROM companies WHERE id=?").bind(id).first<Row>();
+      if(!company)throw new Error("Company not found.");
+      const emails=await rows("SELECT email FROM contacts WHERE lower(company)=lower(?) AND email<>''",String(company.name));
+      const domain=chooseCompanyDomain(company.domain,company.website,emails.map(row=>row.email));
+      const apiKey=String((env as unknown as Record<string,unknown>).APOLLO_API_KEY||"");
+      const proposal=await enrichCompanyApollo(apiKey,{name:String(company.name),domain,website:str(company.website),linkedinUrl:str(company.linkedin_url)});
       return Response.json({proposal});
     }
     if(action==="applyCompanyEnrichment"){
