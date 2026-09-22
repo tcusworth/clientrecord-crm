@@ -4,6 +4,7 @@ import { calculateRelationshipHealth } from "@/lib/relationship-health";
 import { defaultPipeline, type Stage } from "@/lib/sales-rules";
 import { calculateStakeholderCoverage, dealStakeholderRoles } from "@/lib/stakeholder-coverage";
 import { generateRecommendationCandidates, type RecommendationCandidate } from "@/lib/next-best-action";
+import { buildMeetingPreparationBrief } from "@/lib/meeting-intelligence";
 
 type Row=Record<string,unknown>;
 const text=(value:unknown,max=4000)=>String(value??"").trim().slice(0,max);
@@ -12,11 +13,29 @@ const money=(value:unknown)=>{const n=Number(value);if(!Number.isFinite(n)||n<0|
 const bool=(value:unknown)=>value===true||value===1||value==="1"||value==="true"||value==="on";
 const rows=async(sql:string,...args:(string|number|null)[])=>(await env.DB.prepare(sql).bind(...args).all()).results as Row[];
 const one=async(sql:string,...args:(string|number|null)[])=>env.DB.prepare(sql).bind(...args).first<Row>();
+const stringList=(value:unknown)=>Array.isArray(value)?value.map(item=>text(item,2000)).filter(Boolean):text(value,12000).split(/\r?\n/).map(item=>item.replace(/^[-*]\s*/,"").trim()).filter(Boolean).slice(0,50);
+const json=(value:unknown,fallback:unknown=[]):unknown=>{try{return JSON.parse(String(value??""))}catch{return fallback}};
 
 async function dealRecord(dealId:number){
   const deal=await one("SELECT d.*,COALESCE(d.company_id,c.id) AS resolved_company_id FROM deals d LEFT JOIN companies c ON c.name=d.company WHERE d.id=?",dealId);
   if(!deal)throw new Error("Deal not found.");
   return deal;
+}
+
+async function ensureMeetingRecords(dealId:number){
+  const activities=await rows("SELECT * FROM deal_activities WHERE deal_id=? AND lower(type) LIKE '%meeting%' ORDER BY happened_at",dealId);
+  for(const activity of activities){
+    const meetingId=`activity-${activity.id}`,outcome=text(activity.outcome,60),status=/cancel/i.test(outcome)?"Cancelled":/complet|held|attended|met/i.test(outcome)||Date.parse(String(activity.happened_at))<Date.now()?"Completed":"Scheduled";
+    await env.DB.batch([
+      env.DB.prepare("INSERT OR IGNORE INTO deal_meetings(id,deal_id,company_id,activity_id,subject,status,starts_at,owner,summary,source_provider,external_id,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)").bind(meetingId,dealId,activity.company_id?Number(activity.company_id):null,Number(activity.id),text(activity.subject,240)||"Customer meeting",status,String(activity.happened_at),text(activity.owner,200)||"Unassigned",text(activity.body),text(activity.source,40)||"Manual",text(activity.external_id,240)||null,text(activity.owner,200)||"System",String(activity.created_at||activity.happened_at),String(activity.updated_at||activity.happened_at)),
+      ...(activity.contact_id?[env.DB.prepare("INSERT INTO deal_meeting_attendees(meeting_id,contact_id,name,email,role,created_at) SELECT ?,c.id,c.first_name||' '||c.last_name,c.email,'Attendee',? FROM contacts c WHERE c.id=? AND NOT EXISTS(SELECT 1 FROM deal_meeting_attendees a WHERE a.meeting_id=? AND a.contact_id=c.id)").bind(meetingId,String(activity.created_at||activity.happened_at),Number(activity.contact_id),meetingId)]:[]),
+    ]);
+  }
+}
+
+function meetingArtifact(row:Row|null){
+  if(!row)return null;const content=json(row.content_json,{}) as Row;
+  return {id:row.id,meetingKey:String(row.entity_id||"").split(":").slice(1).join(":"),reviewStatus:row.review_status,content,explanation:row.explanation,confidence:Number(row.confidence||0),provider:row.provider,model:row.model,promptVersion:row.prompt_version,rulesVersion:row.rules_version,inputHash:row.input_hash,generatedBy:row.generated_by,generatedAt:row.generated_at,reviewedBy:row.reviewed_by,reviewedAt:row.reviewed_at,sourceCount:Number(row.source_count||0)};
 }
 
 async function coverageStage(deal:Row){
@@ -76,6 +95,50 @@ async function nextBestAction(dealId:number,deal:Row,tasks:Row[],reviews:Row[],p
   return {current:recommendationJson(current),history:history.map(item=>recommendationJson(item)),candidateCount:candidates.length};
 }
 
+async function prepareMeetingBrief(dealId:number,meetingKey:string,userEmail:string){
+  await ensureMeetingRecords(dealId);const deal=await dealRecord(dealId),meeting=meetingKey==="deal"?null:await one("SELECT * FROM deal_meetings WHERE id=? AND deal_id=?",meetingKey,dealId);if(meetingKey!=="deal"&&!meeting)throw new Error("Meeting not found.");
+  const [company,notes,activities,tasks,stakeholders,lineItems,insights,reviews,proposals,meetings,attendees]=await Promise.all([
+    deal.resolved_company_id?one("SELECT * FROM companies WHERE id=?",Number(deal.resolved_company_id)):Promise.resolve(null),
+    rows("SELECT * FROM deal_notes WHERE deal_id=? AND pinned=1 ORDER BY created_at DESC LIMIT 20",dealId),
+    rows("SELECT * FROM deal_activities WHERE deal_id=? ORDER BY happened_at DESC LIMIT 40",dealId),
+    rows("SELECT * FROM deal_tasks WHERE deal_id=? AND completed=0 ORDER BY due_date LIMIT 30",dealId),
+    rows("SELECT s.*,c.first_name||' '||c.last_name AS contact_name,c.email,c.title FROM deal_stakeholders s JOIN contacts c ON c.id=s.contact_id WHERE s.deal_id=? AND s.active=1 ORDER BY s.is_primary DESC,c.first_name",dealId),
+    rows("SELECT * FROM deal_line_items WHERE deal_id=?",dealId),
+    rows("SELECT * FROM deal_insights WHERE deal_id=? AND status!='Resolved' ORDER BY CASE severity WHEN 'High' THEN 1 WHEN 'Medium' THEN 2 ELSE 3 END,updated_at DESC LIMIT 30",dealId),
+    rows("SELECT * FROM deal_reviews WHERE deal_id=? ORDER BY requested_at DESC LIMIT 20",dealId),
+    rows("SELECT * FROM deal_proposals WHERE deal_id=? ORDER BY created_at DESC LIMIT 20",dealId),
+    rows("SELECT * FROM deal_meetings WHERE deal_id=? ORDER BY starts_at DESC LIMIT 20",dealId),
+    meeting?rows("SELECT a.*,c.first_name||' '||c.last_name AS contact_name,c.title AS contact_title FROM deal_meeting_attendees a LEFT JOIN contacts c ON c.id=a.contact_id WHERE a.meeting_id=? ORDER BY a.id",String(meeting.id)):Promise.resolve([]),
+  ]);
+  const health=calculateHealth(deal,tasks,activities,stakeholders,insights,reviews,lineItems),relationship=await relationshipHealth(dealId,deal,tasks,activities,stakeholders),coverage=calculateStakeholderCoverage({deal,stage:await coverageStage(deal),stakeholders,activities}),nextAction=await nextBestAction(dealId,deal,tasks,reviews,proposals,insights,activities,coverage);
+  const sourceGroups=[
+    {type:"deal",id:String(deal.id),updatedAt:text(deal.updated_at),value:deal,excerpt:`${text(deal.name)} · ${text(deal.stage)} · ${text(deal.next_step)}`},
+    ...(company?[{type:"company",id:String(company.id),updatedAt:text(company.updated_at),value:company,excerpt:`${text(company.name)} · ${text(company.industry)} · ${text(company.tier)}`}]:[]),
+    ...(meeting?[{type:"meeting",id:String(meeting.id),updatedAt:text(meeting.updated_at),value:meeting,excerpt:`${text(meeting.subject)} · ${text(meeting.status)} · ${text(meeting.starts_at)}`}]:[]),
+    {type:"meeting-attendees",id:attendees.map(item=>item.id).join(",")||"none",updatedAt:text(meeting?.updated_at||deal.updated_at),value:attendees,excerpt:attendees.map(item=>text(item.contact_name||item.name||item.email)).join(", ")},
+    {type:"deal-activities",id:activities.map(item=>item.id).join(",")||"none",updatedAt:text(activities[0]?.updated_at||activities[0]?.happened_at||deal.updated_at),value:activities,excerpt:activities.slice(0,4).map(item=>`${text(item.type)}: ${text(item.subject)}`).join("; ")},
+    {type:"pinned-notes",id:notes.map(item=>item.id).join(",")||"none",updatedAt:text(notes[0]?.updated_at||deal.updated_at),value:notes,excerpt:notes.slice(0,4).map(item=>text(item.body,180)).join("; ")},
+    {type:"open-tasks",id:tasks.map(item=>item.id).join(",")||"none",updatedAt:text(tasks[0]?.created_at||deal.updated_at),value:tasks,excerpt:tasks.slice(0,5).map(item=>`${text(item.title)} · ${text(item.due_date)}`).join("; ")},
+    {type:"stakeholders",id:stakeholders.map(item=>item.id).join(",")||"none",updatedAt:text(stakeholders[0]?.updated_at||deal.updated_at),value:stakeholders,excerpt:stakeholders.map(item=>`${text(item.contact_name)} (${text(item.role)})`).join(", ")},
+    {type:"deal-intelligence",id:insights.map(item=>item.id).join(",")||"none",updatedAt:text(insights[0]?.updated_at||deal.updated_at),value:insights,excerpt:insights.slice(0,5).map(item=>`${text(item.kind)}: ${text(item.title)}`).join("; ")},
+    {type:"meeting-history",id:meetings.map(item=>item.id).join(",")||"none",updatedAt:text(meetings[0]?.updated_at||deal.updated_at),value:meetings,excerpt:meetings.slice(0,5).map(item=>`${text(item.subject)} · ${text(item.status)}`).join("; ")},
+    {type:"proposals",id:proposals.map(item=>item.id).join(",")||"none",updatedAt:text(proposals[0]?.updated_at||deal.updated_at),value:proposals,excerpt:proposals.slice(0,5).map(item=>`${text(item.title)} · ${text(item.status)}`).join("; ")},
+    {type:"reviews",id:reviews.map(item=>item.id).join(",")||"none",updatedAt:text(reviews[0]?.decided_at||reviews[0]?.requested_at||deal.updated_at),value:reviews,excerpt:reviews.slice(0,5).map(item=>`${text(item.review_type)} · ${text(item.status)}`).join("; ")},
+    {type:"relationship-health",id:String(relationship.history[0]?.id||"current"),updatedAt:text(relationship.calculatedAt),value:{score:relationship.score,band:relationship.band,provisional:relationship.provisional,meaningfulInteractions:relationship.meaningfulInteractions},excerpt:`${relationship.score}/100 · ${relationship.band}`},
+    {type:"stakeholder-coverage",id:"current",updatedAt:text(deal.updated_at),value:{stage:coverage.stage,findings:coverage.findings,keyStakeholders:coverage.keyStakeholders},excerpt:coverage.findings.map(item=>item.title).join("; ")},
+    {type:"next-best-action",id:text(nextAction.current?.id||"current"),updatedAt:text(nextAction.current?.updatedAt||deal.updated_at),value:nextAction.current||{},excerpt:text(nextAction.current?.action)},
+  ];
+  const inputHash=await sha256(JSON.stringify(sourceGroups.map(source=>({type:source.type,id:source.id,updatedAt:source.updatedAt,value:source.value})))),entityId=`${dealId}:${meetingKey}`,cached=await one("SELECT a.*,(SELECT count(*) FROM ai_artifact_sources s WHERE s.artifact_id=a.id) AS source_count FROM ai_artifacts a WHERE a.feature='meeting-prep' AND a.entity_type='meeting' AND a.entity_id=? AND a.input_hash=? AND a.review_status!='Rejected' ORDER BY a.generated_at DESC LIMIT 1",entityId,inputHash);
+  if(cached)return {artifact:meetingArtifact(cached),cached:true};
+  const freshness=sourceGroups.map(source=>source.updatedAt).filter(value=>Number.isFinite(Date.parse(value))).sort().at(-1)||new Date().toISOString(),brief=buildMeetingPreparationBrief({deal,company,meeting,attendees,stakeholders,activities,meetings,notes,tasks,insights,reviews,proposals,relationshipHealth:relationship,coverage,nextAction:nextAction.current||null,dealHealth:health,freshnessTime:freshness}),artifactId=crypto.randomUUID(),generatedAt=new Date().toISOString(),confidence=brief.confidence==="High"?90:brief.confidence==="Medium"?70:40,sourcesWithHashes=await Promise.all(sourceGroups.map(async source=>({...source,contentHash:await sha256(JSON.stringify(source.value))})));
+  await env.DB.batch([
+    env.DB.prepare("UPDATE ai_artifacts SET superseded_by=? WHERE feature='meeting-prep' AND entity_type='meeting' AND entity_id=? AND superseded_by IS NULL").bind(artifactId,entityId),
+    env.DB.prepare("INSERT INTO ai_artifacts(id,run_id,feature,entity_type,entity_id,review_status,content_json,original_content_json,explanation,confidence,provider,model,prompt_version,rules_version,input_hash,generated_by,generated_at) VALUES (NULLIF(?,''),NULL,'meeting-prep','meeting',?,'Draft',?,?,?,?, 'clientrecord','meeting-prep-rules-v1',1,'meeting-prep-v1',?,?,?)").bind(artifactId,entityId,JSON.stringify(brief),JSON.stringify(brief),"Source-backed deterministic meeting preparation; no external model call was used.",confidence,inputHash,userEmail,generatedAt),
+    ...sourcesWithHashes.map(source=>env.DB.prepare("INSERT INTO ai_artifact_sources(artifact_id,source_type,source_id,source_updated_at,content_hash,excerpt) VALUES (?,?,?,?,?,?)").bind(artifactId,source.type,source.id.slice(0,1000),source.updatedAt||null,source.contentHash,source.excerpt.slice(0,1000))),
+  ]);
+  return {artifact:meetingArtifact(await one("SELECT a.*,(SELECT count(*) FROM ai_artifact_sources s WHERE s.artifact_id=a.id) AS source_count FROM ai_artifacts a WHERE a.id=?",artifactId)),cached:false};
+}
+
 export async function GET(request:Request){
   const user=await crmUser(request);if(!user)return Response.json({error:"Sign in is required."},{status:401});
   try{
@@ -91,8 +154,9 @@ export async function GET(request:Request){
       ]);
       return Response.json({companyDuplicates,dealDuplicates,unmatchedDeals});
     }
-    const dealId=id(url.searchParams.get("dealId")),deal=await dealRecord(dealId);
-    const [notes,activities,tasks,history,stakeholders,lineItems,insights,reviews,proposals,documents,unassigned]=await Promise.all([
+    const dealId=id(url.searchParams.get("dealId")),deal=await dealRecord(dealId);await ensureMeetingRecords(dealId);
+    const [company,notes,activities,tasks,history,stakeholders,lineItems,insights,reviews,proposals,documents,unassigned,meetings,meetingAttendees,briefRows]=await Promise.all([
+      deal.resolved_company_id?one("SELECT * FROM companies WHERE id=?",Number(deal.resolved_company_id)):Promise.resolve(null),
       rows("SELECT * FROM deal_notes WHERE deal_id=? ORDER BY pinned DESC,created_at DESC",dealId),
       rows("SELECT a.*,c.first_name||' '||c.last_name AS contact_name FROM deal_activities a LEFT JOIN contacts c ON c.id=a.contact_id WHERE a.deal_id=? ORDER BY a.pinned DESC,a.happened_at DESC",dealId),
       rows("SELECT * FROM deal_tasks WHERE deal_id=? ORDER BY completed,due_date",dealId),
@@ -108,6 +172,9 @@ export async function GET(request:Request){
       deal.contact_id?rows(`SELECT a.id,a.type,a.note,a.happened_at,c.first_name||' '||c.last_name AS contact_name
         FROM activities a JOIN contacts c ON c.id=a.contact_id WHERE a.contact_id=? AND a.type IN ('Email','Email received','Email sent','Meeting','Calendar meeting','Call')
         AND NOT EXISTS(SELECT 1 FROM deal_activities da WHERE da.source='Contact activity' AND da.external_id=CAST(a.id AS TEXT)) ORDER BY a.happened_at DESC LIMIT 50`,Number(deal.contact_id)):Promise.resolve([]),
+      rows("SELECT m.*,d.title AS transcript_title FROM deal_meetings m LEFT JOIN client_documents d ON d.id=m.transcript_document_id WHERE m.deal_id=? ORDER BY m.starts_at DESC",dealId),
+      rows("SELECT a.*,c.first_name||' '||c.last_name AS contact_name,c.title AS contact_title FROM deal_meeting_attendees a LEFT JOIN contacts c ON c.id=a.contact_id WHERE a.meeting_id IN (SELECT id FROM deal_meetings WHERE deal_id=?) ORDER BY a.id",dealId),
+      rows("SELECT a.*,(SELECT count(*) FROM ai_artifact_sources s WHERE s.artifact_id=a.id) AS source_count FROM ai_artifacts a WHERE a.feature='meeting-prep' AND a.entity_type='meeting' AND a.entity_id LIKE ? AND a.superseded_by IS NULL AND a.review_status!='Rejected' ORDER BY a.generated_at DESC",`${dealId}:%`),
     ]);
     const health=calculateHealth(deal,tasks,activities,stakeholders,insights,reviews,lineItems),relationship=await relationshipHealth(dealId,deal,tasks,activities,stakeholders),coverage=calculateStakeholderCoverage({deal,stage:await coverageStage(deal),stakeholders,activities}),nextAction=await nextBestAction(dealId,deal,tasks,reviews,proposals,insights,activities,coverage);
     const timeline=[
@@ -118,7 +185,9 @@ export async function GET(request:Request){
       ...documents.map(item=>({id:`document-${item.id}`,kind:"Document",title:item.title,detail:`${item.category} · v${item.latest_version}`,owner:item.uploaded_by,date:item.uploaded_at,pinned:false})),
       ...reviews.map(item=>({id:`review-${item.id}`,kind:"Review",title:`${item.review_type}: ${item.status}`,detail:item.comments,owner:item.approver,date:item.decided_at||item.requested_at,pinned:false})),
     ].sort((a,b)=>Number(b.pinned)-Number(a.pinned)||String(b.date).localeCompare(String(a.date)));
-    return Response.json({deal,health,relationshipHealth:relationship,stakeholderCoverage:coverage,nextBestAction:nextAction,stakeholderRoles:dealStakeholderRoles,notes,activities,tasks,history,stakeholders,lineItems,insights,reviews,proposals,documents,unassigned,timeline,permissions:{edit:can(user,"records.edit"),delete:can(user,"records.delete"),upload:can(user,"documents.upload"),sensitive:can(user,"documents.manage_sensitive"),admin:canAdmin(user.role)}});
+    const attendeeMap=new Map<string,Row[]>();for(const attendee of meetingAttendees){const key=String(attendee.meeting_id),group=attendeeMap.get(key)||[];group.push(attendee);attendeeMap.set(key,group)}
+    const briefMap:Record<string,ReturnType<typeof meetingArtifact>>={};for(const artifact of briefRows){const parsed=meetingArtifact(artifact);if(parsed&&!briefMap[parsed.meetingKey])briefMap[parsed.meetingKey]=parsed}
+    return Response.json({deal,company,health,relationshipHealth:relationship,stakeholderCoverage:coverage,nextBestAction:nextAction,stakeholderRoles:dealStakeholderRoles,notes,activities,tasks,history,stakeholders,lineItems,insights,reviews,proposals,documents,unassigned,meetings:meetings.map(meeting=>({...meeting,attendees:attendeeMap.get(String(meeting.id))||[]})),meetingBriefs:briefMap,timeline,permissions:{edit:can(user,"records.edit"),delete:can(user,"records.delete"),upload:can(user,"documents.upload"),sensitive:can(user,"documents.manage_sensitive"),aiReview:can(user,"ai.review"),admin:canAdmin(user.role)}});
   }catch(error){return Response.json({error:error instanceof Error?error.message:"Deal workspace could not load."},{status:400})}
 }
 
@@ -141,6 +210,24 @@ export async function POST(request:Request){
       const result=await env.DB.prepare("INSERT INTO deal_activities(deal_id,company_id,contact_id,type,subject,body,owner,outcome,happened_at,follow_up_at,source,thread_key,external_id,response_expected,pinned,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").bind(dealId,deal.resolved_company_id?Number(deal.resolved_company_id):null,contactId,type,text(body.subject,240),content,text(body.owner,200)||user.email,text(body.outcome,1000),new Date(happened).toISOString(),follow,"Manual",text(body.threadKey,240)||null,null,bool(body.responseExpected)?1:0,bool(body.pinned)?1:0,now,now).run();
       if(follow)await env.DB.prepare("INSERT INTO deal_tasks(deal_id,title,owner,due_date,created_at) VALUES (?,?,?,?,?)").bind(dealId,text(body.followUpTitle,240)||`Follow up: ${text(body.subject,180)||type}`,text(body.owner,200)||user.email,follow.slice(0,10),now).run();
       await audit(user,action,"deal_activity",result.meta.last_row_id,`Recorded ${type}`,{dealId,contactId,outcome:body.outcome,followUpAt:follow,responseExpected:bool(body.responseExpected)});
+    }else if(action==="saveMeeting"){
+      const meetingId=text(body.id,100)||crypto.randomUUID(),before=await one("SELECT * FROM deal_meetings WHERE id=? AND deal_id=?",meetingId,dealId),subject=text(body.subject,240),status=text(body.status,30)||"Scheduled",startsAt=text(body.startsAt,50),endsAt=text(body.endsAt,50)||null,sourceProvider=text(body.sourceProvider,40)||"Manual";
+      if(!subject||!Number.isFinite(Date.parse(startsAt)))throw new Error("Meeting subject and a valid start time are required.");if(endsAt&&(!Number.isFinite(Date.parse(endsAt))||Date.parse(endsAt)<Date.parse(startsAt)))throw new Error("Meeting end time must be after the start time.");if(!["Scheduled","Completed","Cancelled"].includes(status))throw new Error("Choose scheduled, completed, or cancelled.");if(!["Manual","Google","Microsoft","Granola","Other"].includes(sourceProvider))throw new Error("Choose a supported meeting source.");
+      const attendeeIds=[...new Set(stringList(body.attendeeIds).map(value=>id(value)))],attendees=attendeeIds.length?await rows(`SELECT id,first_name||' '||last_name AS name,email FROM contacts WHERE id IN (${attendeeIds.map(()=>"?").join(",")})`,...attendeeIds):[];if(attendees.length!==attendeeIds.length)throw new Error("One or more attendees could not be found.");
+      const transcriptDocumentId=text(body.transcriptDocumentId,100)||null;if(transcriptDocumentId&&!await one("SELECT id FROM client_documents WHERE id=? AND deal_id=? AND status='Active'",transcriptDocumentId,dealId))throw new Error("Choose a transcript document associated with this deal.");
+      const deal=await dealRecord(dealId),summary=text(body.summary,12000),decisions=stringList(body.decisions),customerCommitments=stringList(body.customerCommitments),internalCommitments=stringList(body.internalCommitments),risksObjections=stringList(body.risksObjections),nextSteps=stringList(body.nextSteps).map(value=>({text:value,owner:text(body.nextStepOwner,200)||text(deal.owner,200)||user.email,dueDate:text(body.nextStepDueDate,20)||null}));
+      let activityId=before?.activity_id?Number(before.activity_id):null;
+      if(activityId)await env.DB.prepare("UPDATE deal_activities SET contact_id=?,subject=?,body=?,owner=?,outcome=?,happened_at=?,source=?,external_id=?,updated_at=? WHERE id=? AND deal_id=?").bind(attendeeIds[0]||null,subject,summary||subject,text(body.owner,200)||user.email,status,startsAt,sourceProvider,text(body.externalId,240)||null,now,activityId,dealId).run();
+      else {const activity=await env.DB.prepare("INSERT INTO deal_activities(deal_id,company_id,contact_id,type,subject,body,owner,outcome,happened_at,source,external_id,pinned,created_at,updated_at) VALUES (?,?,?,'Meeting',?,?,?,?,?,?,?,0,?,?)").bind(dealId,deal.resolved_company_id?Number(deal.resolved_company_id):null,attendeeIds[0]||null,subject,summary||subject,text(body.owner,200)||user.email,status,startsAt,sourceProvider,text(body.externalId,240)||null,now,now).run();activityId=Number(activity.meta.last_row_id)}
+      if(before)await env.DB.prepare("UPDATE deal_meetings SET company_id=?,activity_id=?,subject=?,status=?,starts_at=?,ends_at=?,owner=?,summary=?,decisions_json=?,customer_commitments_json=?,internal_commitments_json=?,risks_objections_json=?,next_steps_json=?,transcript_document_id=?,source_provider=?,external_id=?,updated_at=? WHERE id=? AND deal_id=?").bind(deal.resolved_company_id?Number(deal.resolved_company_id):null,activityId,subject,status,startsAt,endsAt,text(body.owner,200)||user.email,summary,JSON.stringify(decisions),JSON.stringify(customerCommitments),JSON.stringify(internalCommitments),JSON.stringify(risksObjections),JSON.stringify(nextSteps),transcriptDocumentId,sourceProvider,text(body.externalId,240)||null,now,meetingId,dealId).run();
+      else await env.DB.prepare("INSERT INTO deal_meetings(id,deal_id,company_id,activity_id,subject,status,starts_at,ends_at,owner,summary,decisions_json,customer_commitments_json,internal_commitments_json,risks_objections_json,next_steps_json,transcript_document_id,source_provider,external_id,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").bind(meetingId,dealId,deal.resolved_company_id?Number(deal.resolved_company_id):null,activityId,subject,status,startsAt,endsAt,text(body.owner,200)||user.email,summary,JSON.stringify(decisions),JSON.stringify(customerCommitments),JSON.stringify(internalCommitments),JSON.stringify(risksObjections),JSON.stringify(nextSteps),transcriptDocumentId,sourceProvider,text(body.externalId,240)||null,user.email,now,now).run();
+      await env.DB.prepare("DELETE FROM deal_meeting_attendees WHERE meeting_id=?").bind(meetingId).run();if(attendees.length)await env.DB.batch(attendees.map(attendee=>env.DB.prepare("INSERT INTO deal_meeting_attendees(meeting_id,contact_id,name,email,role,created_at) VALUES (?,?,?,?,?,?)").bind(meetingId,Number(attendee.id),text(attendee.name,240),text(attendee.email,320),"Attendee",now)));
+      await audit(user,action,"deal_meeting",meetingId,before?"Updated structured meeting record":"Created structured meeting record",{dealId,before,after:{subject,status,startsAt,endsAt,attendeeIds,sourceProvider,transcriptDocumentId,decisions,customerCommitments,internalCommitments,risksObjections,nextSteps}});
+      return Response.json({ok:true,id:meetingId});
+    }else if(action==="prepareMeeting"){
+      const meetingKey=text(body.meetingId,100)||"deal",result=await prepareMeetingBrief(dealId,meetingKey,user.email);await audit(user,action,"meeting_prep_brief",String(result.artifact?.id||meetingKey),result.cached?"Used cached meeting-preparation brief":"Generated meeting-preparation brief",{dealId,meetingKey,cached:result.cached,inputHash:result.artifact?.inputHash,sourceCount:result.artifact?.sourceCount});return Response.json({ok:true,...result});
+    }else if(action==="reviewMeetingBrief"){
+      if(!can(user,"ai.review"))return Response.json({error:"AI review permission is required."},{status:403});const artifactId=text(body.id,100),status=text(body.status,20);if(!["Accepted","Rejected"].includes(status))throw new Error("Choose accepted or rejected.");const artifact=await one("SELECT * FROM ai_artifacts WHERE id=? AND feature='meeting-prep' AND entity_id LIKE ?",artifactId,`${dealId}:%`);if(!artifact)throw new Error("Meeting brief not found.");const before=JSON.stringify({reviewStatus:artifact.review_status,contentJson:artifact.content_json}),after=JSON.stringify({reviewStatus:status,contentJson:artifact.content_json});await env.DB.batch([env.DB.prepare("INSERT INTO ai_feedback_events(artifact_id,action,before_json,after_json,comment,actor,created_at) VALUES (?,?,?,?,?,?,?)").bind(artifactId,status,before,after,text(body.comment),user.email,now),env.DB.prepare("UPDATE ai_artifacts SET review_status=?,reviewed_by=?,reviewed_at=? WHERE id=?").bind(status,user.email,now,artifactId)]);await audit(user,action,"ai_artifact",artifactId,`${status} meeting-preparation brief`,{dealId,status});
     }else if(action==="linkContactActivity"){
       const sourceId=id(body.activityId),source=await one("SELECT * FROM activities WHERE id=?",sourceId);if(!source)throw new Error("Activity not found.");const deal=await dealRecord(dealId);
       await env.DB.prepare("INSERT INTO deal_activities(deal_id,company_id,contact_id,type,subject,body,owner,outcome,happened_at,source,external_id,pinned,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,'Contact activity',?,0,?,?)").bind(dealId,deal.resolved_company_id?Number(deal.resolved_company_id):null,Number(source.contact_id),String(source.type),String(source.note).slice(0,240),String(source.note),user.email,"",String(source.happened_at),String(sourceId),now,now).run();

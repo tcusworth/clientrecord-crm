@@ -5,16 +5,16 @@ type Row = Record<string, unknown>;
 
 export const aiFeatures = [
   { key:"relationship-health", name:"Relationship health", mode:"Deterministic", phase:2, description:"Explainable 0–100 account and deal health score." },
-  { key:"stakeholder-coverage", name:"Stakeholder coverage", mode:"Deterministic", phase:2, description:"Coverage gaps across decision-maker, champion, buyer, and blocker roles." },
-  { key:"next-best-action", name:"Next-best action", mode:"Hybrid", phase:3, description:"One prioritized action with a source-backed reason." },
-  { key:"meeting-prep", name:"Meeting-preparation brief", mode:"Generative", phase:4, description:"Context, commitments, risks, stakeholder gaps, and agenda." },
-  { key:"follow-up-draft", name:"AI follow-up draft", mode:"Generative", phase:4, description:"Editable meeting summary, decisions, commitments, and email copy." },
-  { key:"account-summary", name:"Account summary", mode:"Generative", phase:5, description:"Current account context from approved CRM records." },
-  { key:"icp-tier", name:"ICP tier", mode:"Hybrid", phase:5, description:"Fit classification with evidence and confidence." },
-  { key:"contact-persona", name:"Contact persona", mode:"Generative", phase:5, description:"Persona classification based on role and relationship context." },
-  { key:"buying-stage", name:"Buying stage", mode:"Hybrid", phase:5, description:"Buying-stage classification separate from pipeline stage." },
-  { key:"meddpicc", name:"MEDDPICC completeness", mode:"Hybrid", phase:5, description:"Qualification coverage with missing evidence." },
-  { key:"deal-risk", name:"Deal-risk summary", mode:"Hybrid", phase:5, description:"Source-backed risk factors and mitigation summary." },
+  { key:"stakeholder-coverage", name:"Stakeholder coverage", mode:"Deterministic", phase:3, description:"Coverage gaps across decision-maker, champion, buyer, and blocker roles." },
+  { key:"next-best-action", name:"Next-best action", mode:"Hybrid", phase:4, description:"One prioritized action with a source-backed reason." },
+  { key:"meeting-prep", name:"Meeting-preparation brief", mode:"Hybrid", phase:5, description:"Context, commitments, risks, stakeholder gaps, agenda, and questions." },
+  { key:"follow-up-draft", name:"AI follow-up draft", mode:"Generative", phase:6, description:"Editable meeting summary, decisions, commitments, and email copy." },
+  { key:"account-summary", name:"Account summary", mode:"Generative", phase:7, description:"Current account context from approved CRM records." },
+  { key:"icp-tier", name:"ICP tier", mode:"Hybrid", phase:7, description:"Fit classification with evidence and confidence." },
+  { key:"contact-persona", name:"Contact persona", mode:"Generative", phase:7, description:"Persona classification based on role and relationship context." },
+  { key:"buying-stage", name:"Buying stage", mode:"Hybrid", phase:7, description:"Buying-stage classification separate from pipeline stage." },
+  { key:"meddpicc", name:"MEDDPICC completeness", mode:"Hybrid", phase:7, description:"Qualification coverage with missing evidence." },
+  { key:"deal-risk", name:"Deal-risk summary", mode:"Hybrid", phase:7, description:"Source-backed risk factors and mitigation summary." },
 ] as const;
 
 export const defaultAiSettings = {
