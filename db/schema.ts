@@ -39,6 +39,7 @@ export const consentEvents = sqliteTable("consent_events", {
 });
 export const companies = sqliteTable("companies", {
   website: text("website").notNull().default(""), domain: text("domain").notNull().default(""), industry: text("industry").notNull().default(""), tier: text("tier").notNull().default(""), territory: text("territory").notNull().default(""), owner: text("owner").notNull().default(""), tags: text("tags").notNull().default("[]"),
+  summary: text("summary").notNull().default(""), headquarters: text("headquarters").notNull().default(""), linkedinUrl: text("linkedin_url").notNull().default(""), logoUrl: text("logo_url").notNull().default(""), employeeRange: text("employee_range").notNull().default(""), enrichmentSource: text("enrichment_source").notNull().default(""), enrichmentConfidence: integer("enrichment_confidence").notNull().default(0), enrichedAt: text("enriched_at"),
   fitScore: integer("fit_score").notNull().default(0), fitReason: text("fit_reason").notNull().default(""), intentScore: integer("intent_score").notNull().default(0), temperature: text("temperature").notNull().default("Cold"),
   id: integer("id").primaryKey({ autoIncrement: true }), name: text("name").notNull().unique(), stage: text("stage").notNull().default("Prospect"), notes: text("notes").notNull().default(""), primaryContactId: integer("primary_contact_id").references(() => contacts.id), updatedAt: text("updated_at").notNull(),
 });

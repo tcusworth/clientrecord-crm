@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { can, canAdmin, crmUser } from "@/lib/crm-auth";
 import { defaultPipeline, relationshipRoles, signalPoints, validateStages, type Pipeline } from "@/lib/sales-rules";
+import { chooseCompanyDomain, enrichCompanyWebsite, normalizedCompanyDomain } from "@/lib/company-enrichment";
 
 type Row=Record<string,unknown>;
 const db=()=>{if(!env.DB)throw new Error("Database is not configured.");return env.DB;};
@@ -83,7 +84,25 @@ export async function POST(request:Request){
   if(!can(user,"records.edit"))return Response.json({error:"Record-edit permission is required."},{status:403});
   try{
     const b=await request.json() as Row,action=str(b.action),now=new Date().toISOString();
-    if(action==="saveAccount"){
+    if(action==="previewCompanyEnrichment"){
+      const id=number(b.company_id,1,1e12),company=await db().prepare("SELECT id,name,website,domain FROM companies WHERE id=?").bind(id).first<Row>();
+      if(!company)throw new Error("Company not found.");
+      const emails=await rows("SELECT email FROM contacts WHERE lower(company)=lower(?) AND email<>''",String(company.name));
+      const domain=chooseCompanyDomain(company.domain,company.website,emails.map(row=>row.email));
+      const proposal=await enrichCompanyWebsite(domain,str(company.website));
+      return Response.json({proposal});
+    }
+    if(action==="applyCompanyEnrichment"){
+      const id=number(b.company_id,1,1e12),before=await db().prepare("SELECT * FROM companies WHERE id=?").bind(id).first<Row>();if(!before)throw new Error("Company not found.");
+      const supplied=b.fields&&typeof b.fields==="object"&&!Array.isArray(b.fields)?b.fields as Row:{};
+      const allowed:Record<string,string>={website:"website",domain:"domain",summary:"summary",industry:"industry",headquarters:"headquarters",linkedin_url:"linkedin_url",logo_url:"logo_url",employee_range:"employee_range"};
+      const updates:Array<{column:string;value:string}>=[];
+      for(const [key,column] of Object.entries(allowed)){if(!Object.hasOwn(supplied,key))continue;let value=str(supplied[key]);if(["website","linkedin_url","logo_url"].includes(key)&&value&&!/^https?:\/\//i.test(value))throw new Error("Enriched links must start with https:// or http://.");if(key==="domain"&&value){value=normalizedCompanyDomain(value);if(!value)throw new Error("The enriched company domain is invalid.")}updates.push({column,value:value.slice(0,key==="summary"?1200:500)})}
+      if(!updates.length)throw new Error("Select at least one enrichment field to apply.");
+      const source=str(b.source).slice(0,1000),confidence=number(b.confidence,0,100),setSql=updates.map(item=>`${item.column}=?`).join(",");
+      const mutation=db().prepare(`UPDATE companies SET ${setSql},enrichment_source=?,enrichment_confidence=?,enriched_at=?,updated_at=? WHERE id=?`).bind(...updates.map(item=>item.value),source,confidence,now,now,id);
+      await db().batch([mutation,auditStatement(user.email,action,String(id),before,{fields:Object.fromEntries(updates.map(item=>[item.column,item.value])),source,confidence})]);
+    }else if(action==="saveAccount"){
       const name=requireText(b.name,"Company name"),owner=requireText(b.owner,"Owner email").toLowerCase(),fit=number(b.fit_score);
       if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(owner))throw new Error("Use an email address for the account owner.");
       if(str(b.website)&&!/^https?:\/\//i.test(str(b.website)))throw new Error("Website must start with https:// or http://.");
@@ -92,8 +111,8 @@ export async function POST(request:Request){
       const fieldValues=await customFieldValues(b,"company");
       const tags=JSON.stringify(str(b.tags).split(",").map(s=>s.trim()).filter(Boolean).slice(0,30));
       const result=await db().batch([
-        db().prepare("INSERT INTO companies(name,stage,notes,updated_at,website,domain,industry,tier,territory,owner,tags,fit_score,fit_reason) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(name) DO UPDATE SET stage=excluded.stage,notes=excluded.notes,updated_at=excluded.updated_at,website=excluded.website,domain=excluded.domain,industry=excluded.industry,tier=excluded.tier,territory=excluded.territory,owner=excluded.owner,tags=excluded.tags,fit_score=excluded.fit_score,fit_reason=excluded.fit_reason")
-          .bind(name,str(b.stage)||"Prospect",str(b.notes),now,str(b.website),str(b.domain).toLowerCase().replace(/^https?:\/\//,"").replace(/^www\./,"").replace(/\/$/,""),str(b.industry),str(b.tier),str(b.territory),owner,tags,fit,str(b.fit_reason)),
+        db().prepare("INSERT INTO companies(name,stage,notes,updated_at,website,domain,industry,tier,territory,owner,tags,fit_score,fit_reason,summary,headquarters,linkedin_url,logo_url,employee_range) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(name) DO UPDATE SET stage=excluded.stage,notes=excluded.notes,updated_at=excluded.updated_at,website=excluded.website,domain=excluded.domain,industry=excluded.industry,tier=excluded.tier,territory=excluded.territory,owner=excluded.owner,tags=excluded.tags,fit_score=excluded.fit_score,fit_reason=excluded.fit_reason,summary=excluded.summary,headquarters=excluded.headquarters,linkedin_url=excluded.linkedin_url,logo_url=excluded.logo_url,employee_range=excluded.employee_range")
+          .bind(name,str(b.stage)||"Prospect",str(b.notes),now,str(b.website),str(b.domain).toLowerCase().replace(/^https?:\/\//,"").replace(/^www\./,"").replace(/\/$/,""),str(b.industry),str(b.tier),str(b.territory),owner,tags,fit,str(b.fit_reason),str(b.summary),str(b.headquarters),str(b.linkedin_url),str(b.logo_url),str(b.employee_range)),
         ...(Object.hasOwn(b,"primary_contact_id")?[db().prepare("UPDATE companies SET primary_contact_id=? WHERE name=?").bind(b.primary_contact_id?number(b.primary_contact_id,1,1e12):null,name)]:[]),
         ...recalculate(name,user.email),auditStatement(user.email,action,name,before,b),
       ]);
