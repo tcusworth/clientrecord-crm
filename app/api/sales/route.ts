@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { canAdmin, canEdit, crmUser } from "@/lib/crm-auth";
+import { can, canAdmin, crmUser } from "@/lib/crm-auth";
 import { defaultPipeline, relationshipRoles, signalPoints, validateStages, type Pipeline } from "@/lib/sales-rules";
 
 type Row=Record<string,unknown>;
@@ -55,7 +55,7 @@ export async function GET(request:Request){
 }
 export async function POST(request:Request){
   const user=await crmUser(request);if(!user)return Response.json({error:"Sign in is required."},{status:401});
-  if(!canEdit(user.role))return Response.json({error:"Editor access is required."},{status:403});
+  if(!can(user,"records.edit"))return Response.json({error:"Record-edit permission is required."},{status:403});
   try{
     const b=await request.json() as Row,action=str(b.action),now=new Date().toISOString();
     if(action==="saveAccount"){
@@ -124,8 +124,8 @@ export async function POST(request:Request){
       if(stage.kind==="Open"&&!next)throw new Error("Open deals need a next action.");
       const value=Math.round(number(b.value,0,1e10)*100),contact=b.contact_id?number(b.contact_id,1,1e12):null;
       const changed=!before||before.pipeline_key!==pipe.id||(before.stage_key||before.stage)!==stage.key;
-      const params=[name,str(b.company),contact,stage.name,owner,value,stage.probability,next,str(b.close_date)||null,str(b.lead_source)||"Direct",stage.kind,pipe.id,stage.key,stage.kind==="Open"?"":reason,changed?now:String(before?.stage_entered_at||""),now];
-      const mutation=id?db().prepare("UPDATE deals SET name=?,company=?,contact_id=?,stage=?,owner=?,value=?,probability=?,next_step=?,close_date=?,lead_source=?,status=?,pipeline_key=?,stage_key=?,closed_reason=?,stage_entered_at=?,updated_at=? WHERE id=?").bind(...params,id):db().prepare("INSERT INTO deals(name,company,contact_id,stage,owner,value,probability,next_step,close_date,lead_source,status,pipeline_key,stage_key,closed_reason,stage_entered_at,updated_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").bind(...params,now);
+      const params=[name,str(b.company),contact,stage.name,owner,value,stage.probability,next,str(b.close_date)||null,str(b.lead_source)||"Direct",str(b.campaign),str(b.partner),str(b.forecast_category)||"Pipeline",stage.kind,pipe.id,stage.key,stage.kind==="Open"?"":reason,changed?now:String(before?.stage_entered_at||""),now];
+      const mutation=id?db().prepare("UPDATE deals SET name=?,company=?,contact_id=?,stage=?,owner=?,value=?,probability=?,next_step=?,close_date=?,lead_source=?,campaign=?,partner=?,forecast_category=?,status=?,pipeline_key=?,stage_key=?,closed_reason=?,stage_entered_at=?,updated_at=? WHERE id=?").bind(...params,id):db().prepare("INSERT INTO deals(name,company,contact_id,stage,owner,value,probability,next_step,close_date,lead_source,campaign,partner,forecast_category,status,pipeline_key,stage_key,closed_reason,stage_entered_at,updated_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").bind(...params,now);
       // last_insert_rowid refers to the preceding deal insert inside this transaction.
       const history=db().prepare("INSERT INTO deal_stage_history(deal_id,from_stage,to_stage,from_pipeline,to_pipeline,reason,actor,happened_at) VALUES ("+(id?"?":"last_insert_rowid()")+",?,?,?,?,?,?,?)").bind(...(id?[id]:[]),String(before?.stage||"Created"),stage.name,String(before?.pipeline_key||""),pipe.id,reason,user.email,now);
       await db().batch([mutation,...(changed?[history]:[]),auditStatement(user.email,action,String(id||"new"),before,b)]);
@@ -136,7 +136,7 @@ export async function POST(request:Request){
       const id=number(b.deal_id,1,1e12),due=requireText(b.due_date,"Due date");
       if(!/^\d{4}-\d{2}-\d{2}$/.test(due)||!Number.isFinite(Date.parse(due)))throw new Error("Choose a valid due date.");
       await db().batch([db().prepare("INSERT INTO deal_tasks(deal_id,title,owner,due_date,created_at) VALUES (?,?,?,?,?)").bind(id,requireText(b.title,"Task title"),requireText(b.owner,"Task owner"),due,now),auditStatement(user.email,action,String(id),null,b)]);
-    }else if(action==="completeTask"){
+    }else if(action==="completeTask"||action==="toggleDealTask"){
       const before=await db().prepare("SELECT * FROM deal_tasks WHERE id=?").bind(number(b.id,1,1e12)).first();
       await db().batch([db().prepare("UPDATE deal_tasks SET completed=? WHERE id=?").bind(b.completed?1:0,b.id),auditStatement(user.email,action,String(b.id),before,b)]);
     }else throw new Error("Unknown sales action.");

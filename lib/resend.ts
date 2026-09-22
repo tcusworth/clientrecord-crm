@@ -7,18 +7,15 @@ export function resendConfigured() {
 }
 
 export async function resend(path: string, init: RequestInit = {}) {
-  if (!env.RESEND_API_KEY) throw new Error("Resend is not connected yet.");
-  const response = await fetch(`https://api.resend.com${path}`, {
-    ...init,
-    headers: {
-      Authorization: `Bearer ${env.RESEND_API_KEY}`,
-      "Content-Type": "application/json",
-      ...(init.headers || {}),
-    },
-  });
-  const data = await response.json().catch(() => ({})) as Json;
-  if (!response.ok) throw new Error(typeof data.message === "string" ? data.message : "Resend rejected the request.");
-  return data;
+  let requestBody:Json={};try{requestBody=typeof init.body==="string"?JSON.parse(init.body):{}}catch{}
+  const log=async(message:string)=>{try{const to=Array.isArray(requestBody.to)?String(requestBody.to[0]||""):String(requestBody.to||"");await env.DB.prepare("INSERT INTO delivery_logs(provider,kind,status,recipient,subject,error,context,created_at) VALUES ('resend',?,'Failed',?,?,?,?,datetime('now'))").bind(path.includes("broadcast")?"campaign":"email",to,String(requestBody.subject||""),message,JSON.stringify({path})).run();}catch{}}
+  if (!env.RESEND_API_KEY) {const message="Resend is not connected yet.";await log(message);throw new Error(message);}
+  try{
+    const response = await fetch(`https://api.resend.com${path}`, {...init,headers:{Authorization:`Bearer ${env.RESEND_API_KEY}`,"Content-Type":"application/json",...(init.headers||{})}});
+    const data = await response.json().catch(() => ({})) as Json;
+    if (!response.ok) {const message=typeof data.message==="string"?data.message:"Resend rejected the request.";await log(message);throw new Error(message);}
+    return data;
+  }catch(error){const message=error instanceof Error?error.message:"Resend request failed.";if(message!=="Resend rejected the request.")await log(message);throw error;}
 }
 
 export type SendingIdentity = {

@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { audit, canAdmin, crmUser } from "@/lib/crm-auth";
+import { audit, can, crmUser } from "@/lib/crm-auth";
 import { fromEmail, resend, sendingIdentity } from "@/lib/resend";
 
 const clean = (value: unknown) => typeof value === "string" ? value.trim() : "";
@@ -23,7 +23,7 @@ async function connectionStatus(domain: string) {
 async function requireAdmin(request: Request) {
   const user = await crmUser(request);
   if (!user) return { user: null, response: Response.json({ error: "Sign in is required." }, { status: 401 }) };
-  if (!canAdmin(user.role)) return { user: null, response: Response.json({ error: "Admin access is required." }, { status: 403 }) };
+  if (!can(user,"settings.manage")) return { user: null, response: Response.json({ error: "Settings permission is required." }, { status: 403 }) };
   return { user, response: null };
 }
 

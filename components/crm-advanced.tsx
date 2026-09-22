@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { SalesFoundation } from "@/components/sales-foundation";
+import { AdministrationHardening, ConnectedAccounts } from "@/components/production-workspace";
 import { BarChart3, Check, Clock3, DollarSign, MailCheck, Play, Plus, RefreshCw, ShieldCheck, UserCog } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -33,8 +34,8 @@ export function AdvancedWorkspace({section,contacts}:{section:string;contacts:Co
   {section==="deals"&&<SalesFoundation section="deals"/>}
   {section==="automations"&&<Automations data={data} contacts={contacts} disabled={!editable||busy} run={run}/>} 
   {section==="reports"&&<Reports data={data} disabled={!editable||busy} run={run}/>} 
-  {section==="integrations"&&<Integrations data={data} disabled={!editable||busy} sync={async()=>{setBusy(true);setError("");try{const r=await fetch("/api/microsoft/sync",{method:"POST"}),result=await r.json();if(!r.ok)throw new Error(result.error);await load();setNotice(`${result.messages} emails and ${result.meetings} meetings synchronized`)}catch(e){setError(e instanceof Error?e.message:"Synchronization failed.")}finally{setBusy(false)}}}/>} 
-  {section==="settings"&&<><BrandSettingsPanel admin={admin}/><SettingsPanel data={data} contacts={contacts} disabled={!editable||busy} admin={admin} run={run}/></>} 
+  {section==="integrations"&&<><Heading eyebrow="Connected work" title="Mailbox and calendar synchronization"/><ConnectedAccounts/></>}
+  {section==="settings"&&<><BrandSettingsPanel admin={admin}/><SettingsPanel data={data} contacts={contacts} disabled={!editable||busy} admin={admin} run={run}/>{admin&&<AdministrationHardening/>}</>}
  </div>;
 }
 

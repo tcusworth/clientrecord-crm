@@ -1,11 +1,11 @@
 import { env } from "cloudflare:workers";
-import { crmUser } from "@/lib/crm-auth";
+import { can, crmUser } from "@/lib/crm-auth";
 
 function csv(value:unknown){const text=value==null?"":String(value);return /[",\n]/.test(text)?`"${text.replaceAll('"','""')}"`:text;}
 function download(name:string,headers:string[],rows:unknown[][]){const body=[headers,...rows].map(row=>row.map(csv).join(",")).join("\r\n");return new Response(body,{headers:{"content-type":"text/csv; charset=utf-8","content-disposition":`attachment; filename="${name}"`}});}
 
 export async function GET(request:Request){
- if(!await crmUser(request))return Response.json({error:"Authorized sign-in is required."},{status:401});
+ const user=await crmUser(request);if(!user)return Response.json({error:"Authorized sign-in is required."},{status:401});if(!can(user,"records.export"))return Response.json({error:"Export permission is required."},{status:403});
  const type=new URL(request.url).searchParams.get("type")||"contacts";
  if(type==="contacts"){
   const result=await env.DB.prepare("SELECT first_name,last_name,email,company,title,phone,stage,tags,last_contact,next_follow_up,subscribed,suppression_reason,created_at FROM contacts ORDER BY last_name,first_name").all();

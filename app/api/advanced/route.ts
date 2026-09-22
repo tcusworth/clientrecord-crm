@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
-import { audit, canAdmin, canEdit, crmUser } from "@/lib/crm-auth";
+import { audit, can, canAdmin, crmUser } from "@/lib/crm-auth";
 import { fromEmail, resend, resendConfigured, sendingIdentity } from "@/lib/resend";
+import { runDueAutomations } from "@/lib/operations";
 
 const clean = (value: unknown, fallback = "") => typeof value === "string" ? value.trim() : fallback;
 const money = (value: unknown) => Math.max(0, Math.round(Number(value || 0) * 100));
@@ -72,7 +73,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   const user = await crmUser(request); if (!user) return Response.json({ error: "Sign in is required." }, { status: 401 });
   const body = await request.json() as Record<string, unknown>, action = clean(body.action);
-  if (!canEdit(user.role)) return Response.json({ error: "Your viewer role is read-only." }, { status: 403 });
+  if (!can(user,"records.edit")) return Response.json({ error: "Record-edit permission is required." }, { status: 403 });
   try {
     if (action === "createDeal" || action === "updateDeal") return Response.json({error:"Use the configurable pipeline workspace to create or update deals."},{status:409});
     if (action === "saveSource") {
@@ -92,7 +93,7 @@ export async function POST(request: Request) {
       const result = await env.DB.prepare("INSERT INTO automation_enrollments (sequence_id,contact_id,current_step,status,next_run_at,enrolled_at) VALUES (?,?,0,'Active',datetime('now',?),datetime('now'))").bind(sequenceId, contactId, `+${Math.max(0, first.delayDays)} days`).run();
       await audit(user, action, "enrollment", result.meta.last_row_id, "Enrolled contact in follow-up sequence", body); return Response.json({ id: result.meta.last_row_id }, { status: 201 });
     }
-    if (action === "runAutomations") return Response.json({ processed: await runDue(user) });
+    if (action === "runAutomations") return Response.json(await runDueAutomations(user.email));
     if (action === "createField") {
       if (!canAdmin(user.role)) return Response.json({ error: "Admin access is required." }, { status: 403 });
       const name = clean(body.name), key = clean(body.fieldKey).toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, ""); if (!name || !key) return Response.json({ error: "Field name is required." }, { status: 400 });
