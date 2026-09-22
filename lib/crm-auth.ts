@@ -2,14 +2,14 @@ import { env } from "cloudflare:workers";
 import { emitWebhook } from "@/lib/webhooks";
 
 export type CRMRole = "owner" | "admin" | "editor" | "viewer";
-export type CRMPermission = "records.view" | "records.edit" | "records.delete" | "records.export" | "campaigns.send" | "integrations.manage" | "settings.manage" | "audit.view" | "backups.manage" | "webhooks.manage" | "jobs.run";
+export type CRMPermission = "records.view" | "records.edit" | "records.delete" | "records.export" | "documents.view" | "documents.upload" | "documents.manage_sensitive" | "campaigns.send" | "integrations.manage" | "settings.manage" | "audit.view" | "backups.manage" | "webhooks.manage" | "jobs.run";
 export type CRMUser = { id: string; email: string; role: CRMRole; permissions: CRMPermission[] };
 
 const rolePermissions: Record<CRMRole, CRMPermission[]> = {
-  owner: ["records.view","records.edit","records.delete","records.export","campaigns.send","integrations.manage","settings.manage","audit.view","backups.manage","webhooks.manage","jobs.run"],
-  admin: ["records.view","records.edit","records.delete","records.export","campaigns.send","integrations.manage","settings.manage","audit.view","backups.manage","webhooks.manage","jobs.run"],
-  editor: ["records.view","records.edit","campaigns.send"],
-  viewer: ["records.view"],
+  owner: ["records.view","records.edit","records.delete","records.export","documents.view","documents.upload","documents.manage_sensitive","campaigns.send","integrations.manage","settings.manage","audit.view","backups.manage","webhooks.manage","jobs.run"],
+  admin: ["records.view","records.edit","records.delete","records.export","documents.view","documents.upload","documents.manage_sensitive","campaigns.send","integrations.manage","settings.manage","audit.view","backups.manage","webhooks.manage","jobs.run"],
+  editor: ["records.view","records.edit","documents.view","documents.upload","campaigns.send"],
+  viewer: ["records.view","documents.view"],
 };
 
 function parsePermissions(value: unknown, role: CRMRole) {

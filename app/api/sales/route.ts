@@ -36,7 +36,9 @@ export async function GET(request:Request){
         WHERE c.company=(SELECT name FROM companies WHERE id=?) OR c.id IN(SELECT contact_id FROM account_stakeholders WHERE company_id=?)
         UNION ALL SELECT 'signal-'||id,'Signal',kind||': '||summary,occurred_at,actor FROM account_signals WHERE company_id=?
         UNION ALL SELECT 'stage-'||h.id,'Deal stage',d.name||': '||h.from_stage||' → '||h.to_stage,h.happened_at,h.actor FROM deal_stage_history h JOIN deals d ON d.id=h.deal_id WHERE d.company=(SELECT name FROM companies WHERE id=?)
-        ORDER BY date DESC LIMIT 150`,accountId,accountId,accountId,accountId);
+        UNION ALL SELECT 'deal-activity-'||a.id,a.type,d.name||': '||COALESCE(NULLIF(a.subject,''),a.body),a.happened_at,a.owner FROM deal_activities a JOIN deals d ON d.id=a.deal_id WHERE a.company_id=? OR d.company_id=?
+        UNION ALL SELECT 'document-'||v.id,'Document',d.title||' · '||d.category,v.uploaded_at,v.uploaded_by FROM client_documents d JOIN document_versions v ON v.document_id=d.id AND v.version=d.latest_version WHERE d.company_id=? OR d.deal_id IN(SELECT id FROM deals WHERE company_id=?)
+        ORDER BY date DESC LIMIT 150`,accountId,accountId,accountId,accountId,accountId,accountId,accountId,accountId);
       return Response.json({timeline});
     }
     const [companies,contacts,stakeholders,deals,tasks,history,signals,alerts,pipe]=await Promise.all([
@@ -66,8 +68,8 @@ export async function POST(request:Request){
       const before=await db().prepare("SELECT * FROM companies WHERE name=?").bind(name).first<Row>();
       const tags=JSON.stringify(str(b.tags).split(",").map(s=>s.trim()).filter(Boolean).slice(0,30));
       const result=await db().batch([
-        db().prepare("INSERT INTO companies(name,stage,notes,updated_at,website,industry,tier,territory,owner,tags,fit_score,fit_reason) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(name) DO UPDATE SET stage=excluded.stage,notes=excluded.notes,updated_at=excluded.updated_at,website=excluded.website,industry=excluded.industry,tier=excluded.tier,territory=excluded.territory,owner=excluded.owner,tags=excluded.tags,fit_score=excluded.fit_score,fit_reason=excluded.fit_reason")
-          .bind(name,str(b.stage)||"Prospect",str(b.notes),now,str(b.website),str(b.industry),str(b.tier),str(b.territory),owner,tags,fit,str(b.fit_reason)),
+        db().prepare("INSERT INTO companies(name,stage,notes,updated_at,website,domain,industry,tier,territory,owner,tags,fit_score,fit_reason) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(name) DO UPDATE SET stage=excluded.stage,notes=excluded.notes,updated_at=excluded.updated_at,website=excluded.website,domain=excluded.domain,industry=excluded.industry,tier=excluded.tier,territory=excluded.territory,owner=excluded.owner,tags=excluded.tags,fit_score=excluded.fit_score,fit_reason=excluded.fit_reason")
+          .bind(name,str(b.stage)||"Prospect",str(b.notes),now,str(b.website),str(b.domain).toLowerCase().replace(/^https?:\/\//,"").replace(/^www\./,"").replace(/\/$/,""),str(b.industry),str(b.tier),str(b.territory),owner,tags,fit,str(b.fit_reason)),
         ...(Object.hasOwn(b,"primary_contact_id")?[db().prepare("UPDATE companies SET primary_contact_id=? WHERE name=?").bind(b.primary_contact_id?number(b.primary_contact_id,1,1e12):null,name)]:[]),
         ...recalculate(name,user.email),auditStatement(user.email,action,name,before,b),
       ]);
@@ -123,9 +125,22 @@ export async function POST(request:Request){
       if(stage.kind!=="Open"&&!reason)throw new Error("A won/lost reason is required.");
       if(stage.kind==="Open"&&!next)throw new Error("Open deals need a next action.");
       const value=Math.round(number(b.value,0,1e10)*100),contact=b.contact_id?number(b.contact_id,1,1e12):null;
+      let companyId=b.company_id?number(b.company_id,1,1e12):null,company:{id?:number;name:string}|null=companyId?await db().prepare("SELECT name FROM companies WHERE id=?").bind(companyId).first<{name:string}>():null;
+      // Preserve compatibility with older clients while converting the stored name into a durable relationship.
+      if(!companyId&&str(b.company)){company=await db().prepare("SELECT id,name FROM companies WHERE lower(name)=lower(?) LIMIT 1").bind(str(b.company)).first<{id:number;name:string}>();if(company)companyId=company.id}
+      if(companyId&&!company)throw new Error("Choose an existing company record.");
+      const required=stage.requiredFields||[];
+      if(required.includes("company")&&!companyId)throw new Error(`${stage.name} requires a company.`);
+      if(required.includes("contact")&&!contact)throw new Error(`${stage.name} requires a primary contact.`);
+      if(required.includes("value")&&!value)throw new Error(`${stage.name} requires a deal value.`);
+      if(required.includes("closeDate")&&!str(b.close_date))throw new Error(`${stage.name} requires an expected close date.`);
+      if(required.includes("nextStep")&&!next)throw new Error(`${stage.name} requires a next action.`);
+      if(required.includes("products")&&(!id||!(await db().prepare("SELECT id FROM deal_line_items WHERE deal_id=? LIMIT 1").bind(id).first())))throw new Error(`${stage.name} requires at least one product or line item. Save the deal in an earlier stage, add products, then advance it.`);
+      if(required.includes("decisionCriteria")&&(!id||!(await db().prepare("SELECT id FROM deal_insights WHERE deal_id=? AND kind='Decision criterion' LIMIT 1").bind(id).first())))throw new Error(`${stage.name} requires documented decision criteria.`);
+      if(required.includes("approval")&&(!id||!(await db().prepare("SELECT id FROM deal_reviews WHERE deal_id=? AND status='Approved' LIMIT 1").bind(id).first())))throw new Error(`${stage.name} requires an approved deal review.`);
       const changed=!before||before.pipeline_key!==pipe.id||(before.stage_key||before.stage)!==stage.key;
-      const params=[name,str(b.company),contact,stage.name,owner,value,stage.probability,next,str(b.close_date)||null,str(b.lead_source)||"Direct",str(b.campaign),str(b.partner),str(b.forecast_category)||"Pipeline",stage.kind,pipe.id,stage.key,stage.kind==="Open"?"":reason,changed?now:String(before?.stage_entered_at||""),now];
-      const mutation=id?db().prepare("UPDATE deals SET name=?,company=?,contact_id=?,stage=?,owner=?,value=?,probability=?,next_step=?,close_date=?,lead_source=?,campaign=?,partner=?,forecast_category=?,status=?,pipeline_key=?,stage_key=?,closed_reason=?,stage_entered_at=?,updated_at=? WHERE id=?").bind(...params,id):db().prepare("INSERT INTO deals(name,company,contact_id,stage,owner,value,probability,next_step,close_date,lead_source,campaign,partner,forecast_category,status,pipeline_key,stage_key,closed_reason,stage_entered_at,updated_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").bind(...params,now);
+      const params=[name,company?.name||"",companyId,contact,stage.name,owner,value,stage.probability,next,str(b.close_date)||null,str(b.lead_source)||"Direct",str(b.campaign),str(b.partner),str(b.forecast_category)||"Pipeline",stage.kind,pipe.id,stage.key,stage.kind==="Open"?"":reason,changed?now:String(before?.stage_entered_at||""),now];
+      const mutation=id?db().prepare("UPDATE deals SET name=?,company=?,company_id=?,contact_id=?,stage=?,owner=?,value=?,probability=?,next_step=?,close_date=?,lead_source=?,campaign=?,partner=?,forecast_category=?,status=?,pipeline_key=?,stage_key=?,closed_reason=?,stage_entered_at=?,updated_at=? WHERE id=?").bind(...params,id):db().prepare("INSERT INTO deals(name,company,company_id,contact_id,stage,owner,value,probability,next_step,close_date,lead_source,campaign,partner,forecast_category,status,pipeline_key,stage_key,closed_reason,stage_entered_at,updated_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").bind(...params,now);
       // last_insert_rowid refers to the preceding deal insert inside this transaction.
       const history=db().prepare("INSERT INTO deal_stage_history(deal_id,from_stage,to_stage,from_pipeline,to_pipeline,reason,actor,happened_at) VALUES ("+(id?"?":"last_insert_rowid()")+",?,?,?,?,?,?,?)").bind(...(id?[id]:[]),String(before?.stage||"Created"),stage.name,String(before?.pipeline_key||""),pipe.id,reason,user.email,now);
       await db().batch([mutation,...(changed?[history]:[]),auditStatement(user.email,action,String(id||"new"),before,b)]);
