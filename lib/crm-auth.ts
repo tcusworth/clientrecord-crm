@@ -2,14 +2,14 @@ import { env } from "cloudflare:workers";
 import { emitWebhook } from "@/lib/webhooks";
 
 export type CRMRole = "owner" | "admin" | "editor" | "viewer";
-export type CRMPermission = "records.view" | "records.edit" | "records.delete" | "records.export" | "documents.view" | "documents.upload" | "documents.manage_sensitive" | "campaigns.send" | "integrations.manage" | "settings.manage" | "audit.view" | "backups.manage" | "webhooks.manage" | "jobs.run";
+export type CRMPermission = "records.view" | "records.edit" | "records.delete" | "records.export" | "documents.view" | "documents.upload" | "documents.manage_sensitive" | "campaigns.send" | "integrations.manage" | "settings.manage" | "audit.view" | "backups.manage" | "webhooks.manage" | "jobs.run" | "ai.view" | "ai.generate" | "ai.review" | "ai.configure";
 export type CRMUser = { id: string; email: string; role: CRMRole; permissions: CRMPermission[] };
 
 const rolePermissions: Record<CRMRole, CRMPermission[]> = {
-  owner: ["records.view","records.edit","records.delete","records.export","documents.view","documents.upload","documents.manage_sensitive","campaigns.send","integrations.manage","settings.manage","audit.view","backups.manage","webhooks.manage","jobs.run"],
-  admin: ["records.view","records.edit","records.delete","records.export","documents.view","documents.upload","documents.manage_sensitive","campaigns.send","integrations.manage","settings.manage","audit.view","backups.manage","webhooks.manage","jobs.run"],
-  editor: ["records.view","records.edit","documents.view","documents.upload","campaigns.send"],
-  viewer: ["records.view","documents.view"],
+  owner: ["records.view","records.edit","records.delete","records.export","documents.view","documents.upload","documents.manage_sensitive","campaigns.send","integrations.manage","settings.manage","audit.view","backups.manage","webhooks.manage","jobs.run","ai.view","ai.generate","ai.review","ai.configure"],
+  admin: ["records.view","records.edit","records.delete","records.export","documents.view","documents.upload","documents.manage_sensitive","campaigns.send","integrations.manage","settings.manage","audit.view","backups.manage","webhooks.manage","jobs.run","ai.view","ai.generate","ai.review","ai.configure"],
+  editor: ["records.view","records.edit","documents.view","documents.upload","campaigns.send","ai.view","ai.generate","ai.review"],
+  viewer: ["records.view","documents.view","ai.view"],
 };
 
 function parsePermissions(value: unknown, role: CRMRole) {

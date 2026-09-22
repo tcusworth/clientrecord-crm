@@ -151,6 +151,48 @@ export const importChanges = sqliteTable("import_changes", {
 export const apiKeys = sqliteTable("api_keys", {
   id: text("id").primaryKey(), name: text("name").notNull(), keyHash: text("key_hash").notNull().unique(), keyPrefix: text("key_prefix").notNull(), scopes: text("scopes").notNull(), lastUsedAt: text("last_used_at"), expiresAt: text("expires_at"), revokedAt: text("revoked_at"), createdBy: text("created_by").notNull(), createdAt: text("created_at").notNull(),
 });
+
+export const aiSettings = sqliteTable("ai_settings", {
+  id: integer("id").primaryKey(),
+  provider: text("provider").notNull().default("openai"),
+  model: text("model").notNull().default("gpt-5-mini"),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(false),
+  dailyRunLimit: integer("daily_run_limit").notNull().default(100),
+  perUserDailyLimit: integer("per_user_daily_limit").notNull().default(25),
+  maxContextChars: integer("max_context_chars").notNull().default(60000),
+  resultRetentionDays: integer("result_retention_days").notNull().default(730),
+  requireReview: integer("require_review", { mode: "boolean" }).notNull().default(true),
+  allowSensitiveSources: integer("allow_sensitive_sources", { mode: "boolean" }).notNull().default(false),
+  updatedBy: text("updated_by").notNull().default(""),
+  updatedAt: text("updated_at").notNull(),
+});
+export const aiPromptVersions = sqliteTable("ai_prompt_versions", {
+  id: text("id").primaryKey(), feature: text("feature").notNull(), version: integer("version").notNull(), name: text("name").notNull(),
+  systemPrompt: text("system_prompt").notNull(), responseSchema: text("response_schema").notNull().default("{}"), status: text("status").notNull().default("Draft"),
+  createdBy: text("created_by").notNull(), createdAt: text("created_at").notNull(), activatedBy: text("activated_by"), activatedAt: text("activated_at"),
+}, t => [uniqueIndex("ai_prompt_feature_version").on(t.feature,t.version),index("ai_prompt_feature_status").on(t.feature,t.status)]);
+export const aiRuns = sqliteTable("ai_runs", {
+  id: text("id").primaryKey(), feature: text("feature").notNull(), entityType: text("entity_type").notNull(), entityId: text("entity_id"), status: text("status").notNull(),
+  provider: text("provider").notNull(), model: text("model").notNull(), promptVersion: integer("prompt_version"), inputHash: text("input_hash").notNull(), requestedBy: text("requested_by").notNull(),
+  sourceCount: integer("source_count").notNull().default(0), inputChars: integer("input_chars").notNull().default(0), outputChars: integer("output_chars").notNull().default(0),
+  latencyMs: integer("latency_ms").notNull().default(0), estimatedTokens: integer("estimated_tokens").notNull().default(0), error: text("error").notNull().default(""),
+  startedAt: text("started_at").notNull(), completedAt: text("completed_at"),
+}, t => [index("ai_runs_user_date").on(t.requestedBy,t.startedAt),index("ai_runs_feature_date").on(t.feature,t.startedAt),index("ai_runs_status_date").on(t.status,t.startedAt)]);
+export const aiArtifacts = sqliteTable("ai_artifacts", {
+  id: text("id").primaryKey(), runId: text("run_id").references(()=>aiRuns.id), feature: text("feature").notNull(), entityType: text("entity_type").notNull(), entityId: text("entity_id"),
+  reviewStatus: text("review_status").notNull().default("Draft"), contentJson: text("content_json").notNull(), originalContentJson: text("original_content_json").notNull(),
+  explanation: text("explanation").notNull().default(""), confidence: integer("confidence").notNull().default(0), provider: text("provider").notNull(), model: text("model").notNull(),
+  promptVersion: integer("prompt_version"), rulesVersion: text("rules_version").notNull().default(""), inputHash: text("input_hash").notNull(), generatedBy: text("generated_by").notNull(),
+  generatedAt: text("generated_at").notNull(), reviewedBy: text("reviewed_by"), reviewedAt: text("reviewed_at"), supersededBy: text("superseded_by"),
+}, t => [index("ai_artifacts_entity_date").on(t.entityType,t.entityId,t.generatedAt),index("ai_artifacts_status_date").on(t.reviewStatus,t.generatedAt)]);
+export const aiArtifactSources = sqliteTable("ai_artifact_sources", {
+  id: integer("id").primaryKey({autoIncrement:true}), artifactId: text("artifact_id").notNull().references(()=>aiArtifacts.id), sourceType: text("source_type").notNull(), sourceId: text("source_id").notNull(),
+  sourceUpdatedAt: text("source_updated_at"), contentHash: text("content_hash").notNull(), excerpt: text("excerpt").notNull().default(""),
+}, t => [uniqueIndex("ai_artifact_source_unique").on(t.artifactId,t.sourceType,t.sourceId),index("ai_artifact_sources_artifact").on(t.artifactId)]);
+export const aiFeedbackEvents = sqliteTable("ai_feedback_events", {
+  id: integer("id").primaryKey({autoIncrement:true}), artifactId: text("artifact_id").notNull().references(()=>aiArtifacts.id), action: text("action").notNull(),
+  beforeJson: text("before_json").notNull().default("{}"), afterJson: text("after_json").notNull().default("{}"), comment: text("comment").notNull().default(""), actor: text("actor").notNull(), createdAt: text("created_at").notNull(),
+}, t => [index("ai_feedback_artifact_date").on(t.artifactId,t.createdAt)]);
 export const webhookEndpoints = sqliteTable("webhook_endpoints", {
   id: text("id").primaryKey(), name: text("name").notNull(), url: text("url").notNull(), events: text("events").notNull(), secretEncrypted: text("secret_encrypted").notNull(), active: integer("active",{mode:"boolean"}).notNull().default(true), lastStatus: integer("last_status"), lastTriggeredAt: text("last_triggered_at"), createdAt: text("created_at").notNull(),
 });
