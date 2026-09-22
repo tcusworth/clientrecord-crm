@@ -74,8 +74,13 @@ export const dealTasks = sqliteTable("deal_tasks", {
 export const dealActivities = sqliteTable("deal_activities", {
   id: integer("id").primaryKey({autoIncrement:true}), dealId: integer("deal_id").notNull().references(()=>deals.id), companyId: integer("company_id").references(()=>companies.id), contactId: integer("contact_id").references(()=>contacts.id),
   type: text("type").notNull(), subject: text("subject").notNull().default(""), body: text("body").notNull(), owner: text("owner").notNull(), outcome: text("outcome").notNull().default(""), happenedAt: text("happened_at").notNull(), followUpAt: text("follow_up_at"),
-  source: text("source").notNull().default("Manual"), threadKey: text("thread_key"), externalId: text("external_id"), pinned: integer("pinned",{mode:"boolean"}).notNull().default(false), createdAt: text("created_at").notNull(), updatedAt: text("updated_at").notNull(),
+  source: text("source").notNull().default("Manual"), threadKey: text("thread_key"), externalId: text("external_id"), responseExpected: integer("response_expected",{mode:"boolean"}).notNull().default(false), pinned: integer("pinned",{mode:"boolean"}).notNull().default(false), createdAt: text("created_at").notNull(), updatedAt: text("updated_at").notNull(),
 },t=>[index("deal_activities_deal_date").on(t.dealId,t.happenedAt),index("deal_activities_contact_date").on(t.contactId,t.happenedAt),index("deal_activities_thread").on(t.threadKey)]);
+export const dealRelationshipHealthScores = sqliteTable("deal_relationship_health_scores", {
+  id: integer("id").primaryKey({autoIncrement:true}), dealId: integer("deal_id").notNull().references(()=>deals.id), score: integer("score").notNull(), band: text("band").notNull(),
+  provisional: integer("provisional",{mode:"boolean"}).notNull().default(true), confidence: text("confidence").notNull(), confidenceScore: integer("confidence_score").notNull(),
+  componentsJson: text("components_json").notNull(), evidenceJson: text("evidence_json").notNull(), dataGapsJson: text("data_gaps_json").notNull(), inputHash: text("input_hash").notNull(), calculatedAt: text("calculated_at").notNull(),
+},t=>[uniqueIndex("deal_relationship_health_input").on(t.dealId,t.inputHash),index("deal_relationship_health_deal_date").on(t.dealId,t.calculatedAt)]);
 export const dealNotes = sqliteTable("deal_notes", {
   id: integer("id").primaryKey({autoIncrement:true}), dealId: integer("deal_id").notNull().references(()=>deals.id), kind: text("kind").notNull().default("Note"), body: text("body").notNull(), owner: text("owner").notNull(), pinned: integer("pinned",{mode:"boolean"}).notNull().default(false), createdAt: text("created_at").notNull(), updatedAt: text("updated_at").notNull(),
 },t=>[index("deal_notes_deal_pinned").on(t.dealId,t.pinned,t.createdAt)]);

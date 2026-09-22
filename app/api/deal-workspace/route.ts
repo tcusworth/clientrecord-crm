@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
-import { audit, can, canAdmin, crmUser } from "@/lib/crm-auth";
+import { audit, can, canAdmin, crmUser, sha256 } from "@/lib/crm-auth";
+import { calculateRelationshipHealth } from "@/lib/relationship-health";
 
 type Row=Record<string,unknown>;
 const text=(value:unknown,max=4000)=>String(value??"").trim().slice(0,max);
@@ -28,6 +29,17 @@ function calculateHealth(deal:Row,tasks:Row[],activities:Row[],stakeholders:Row[
   if(["Proposal","Negotiation"].includes(String(deal.stage))&&!lineItems.length)subtract(10,"No products or line items");
   if(reviews.some(review=>review.status==="Rejected"))subtract(10,"Approval rejected");
   return {score:Math.max(0,score),status:score>=80?"Healthy":score>=55?"Watch":"At risk",reasons};
+}
+
+async function relationshipHealth(dealId:number,deal:Row,tasks:Row[],activities:Row[],stakeholders:Row[]){
+  const calculation=calculateRelationshipHealth({deal,tasks,activities,stakeholders});
+  const inputHash=await sha256(JSON.stringify({calculationDate:new Date().toISOString().slice(0,10),deal:{createdAt:deal.created_at,updatedAt:deal.updated_at,status:deal.status,nextStep:deal.next_step},activities:activities.map(item=>({id:item.id,type:item.type,outcome:item.outcome,happenedAt:item.happened_at,followUpAt:item.follow_up_at,contactId:item.contact_id,threadKey:item.thread_key,responseExpected:item.response_expected,updatedAt:item.updated_at})),tasks:tasks.map(item=>({id:item.id,dueDate:item.due_date,completed:item.completed})),stakeholders:stakeholders.map(item=>({id:item.id,contactId:item.contact_id,role:item.role,updatedAt:item.updated_at}))}));
+  await env.DB.prepare("INSERT OR IGNORE INTO deal_relationship_health_scores(deal_id,score,band,provisional,confidence,confidence_score,components_json,evidence_json,data_gaps_json,input_hash,calculated_at) VALUES (?,?,?,?,?,?,?,?,?,?,datetime('now'))")
+    .bind(dealId,calculation.score,calculation.band,calculation.provisional?1:0,calculation.confidence,calculation.confidenceScore,JSON.stringify(calculation.components),JSON.stringify(calculation.evidence),JSON.stringify(calculation.dataGaps),inputHash).run();
+  const history=await rows("SELECT id,score,band,provisional,confidence,confidence_score AS confidenceScore,components_json AS componentsJson,evidence_json AS evidenceJson,data_gaps_json AS dataGapsJson,input_hash AS inputHash,calculated_at AS calculatedAt FROM deal_relationship_health_scores WHERE deal_id=? ORDER BY calculated_at DESC,id DESC LIMIT 8",dealId),current=history[0],previous=history[1];
+  const parse=(value:unknown,fallback:unknown[])=>{try{const parsed=JSON.parse(String(value||"[]"));return Array.isArray(parsed)?parsed:fallback}catch{return fallback}};
+  const delta=previous?Number(current.score)-Number(previous.score):null,direction=delta==null?"New":delta>0?"Up":delta<0?"Down":"No change";
+  return {score:Number(current.score),band:String(current.band),provisional:Boolean(current.provisional),confidence:String(current.confidence),confidenceScore:Number(current.confidenceScore),components:parse(current.componentsJson,calculation.components),evidence:parse(current.evidenceJson,calculation.evidence),dataGaps:parse(current.dataGapsJson,calculation.dataGaps),calculatedAt:String(current.calculatedAt),previousScore:previous?Number(previous.score):null,direction,change:delta,meaningfulInteractions:calculation.meaningfulInteractions,history:history.map(item=>({id:item.id,score:Number(item.score),band:item.band,provisional:Boolean(item.provisional),confidence:item.confidence,calculatedAt:item.calculatedAt}))};
 }
 
 export async function GET(request:Request){
@@ -63,7 +75,7 @@ export async function GET(request:Request){
         FROM activities a JOIN contacts c ON c.id=a.contact_id WHERE a.contact_id=? AND a.type IN ('Email','Email received','Email sent','Meeting','Calendar meeting','Call')
         AND NOT EXISTS(SELECT 1 FROM deal_activities da WHERE da.source='Contact activity' AND da.external_id=CAST(a.id AS TEXT)) ORDER BY a.happened_at DESC LIMIT 50`,Number(deal.contact_id)):Promise.resolve([]),
     ]);
-    const health=calculateHealth(deal,tasks,activities,stakeholders,insights,reviews,lineItems);
+    const health=calculateHealth(deal,tasks,activities,stakeholders,insights,reviews,lineItems),relationship=await relationshipHealth(dealId,deal,tasks,activities,stakeholders);
     const timeline=[
       ...activities.map(item=>({id:`activity-${item.id}`,kind:"Activity",type:item.type,title:item.subject||item.type,detail:item.body,owner:item.owner,date:item.happened_at,pinned:Boolean(item.pinned)})),
       ...notes.map(item=>({id:`note-${item.id}`,kind:item.kind,title:item.kind,detail:item.body,owner:item.owner,date:item.created_at,pinned:Boolean(item.pinned)})),
@@ -72,7 +84,7 @@ export async function GET(request:Request){
       ...documents.map(item=>({id:`document-${item.id}`,kind:"Document",title:item.title,detail:`${item.category} · v${item.latest_version}`,owner:item.uploaded_by,date:item.uploaded_at,pinned:false})),
       ...reviews.map(item=>({id:`review-${item.id}`,kind:"Review",title:`${item.review_type}: ${item.status}`,detail:item.comments,owner:item.approver,date:item.decided_at||item.requested_at,pinned:false})),
     ].sort((a,b)=>Number(b.pinned)-Number(a.pinned)||String(b.date).localeCompare(String(a.date)));
-    return Response.json({deal,health,notes,activities,tasks,history,stakeholders,lineItems,insights,reviews,proposals,documents,unassigned,timeline,permissions:{edit:can(user,"records.edit"),delete:can(user,"records.delete"),upload:can(user,"documents.upload"),sensitive:can(user,"documents.manage_sensitive"),admin:canAdmin(user.role)}});
+    return Response.json({deal,health,relationshipHealth:relationship,notes,activities,tasks,history,stakeholders,lineItems,insights,reviews,proposals,documents,unassigned,timeline,permissions:{edit:can(user,"records.edit"),delete:can(user,"records.delete"),upload:can(user,"documents.upload"),sensitive:can(user,"documents.manage_sensitive"),admin:canAdmin(user.role)}});
   }catch(error){return Response.json({error:error instanceof Error?error.message:"Deal workspace could not load."},{status:400})}
 }
 
@@ -92,9 +104,9 @@ export async function POST(request:Request){
     }else if(action==="saveActivity"){
       const type=text(body.type,50),content=text(body.body),happened=text(body.happenedAt,40)||now;if(!type||!content||!Number.isFinite(Date.parse(happened)))throw new Error("Activity type, details, and a valid date are required.");
       const deal=await dealRecord(dealId),contactId=body.contactId?id(body.contactId):deal.contact_id?Number(deal.contact_id):null,follow=text(body.followUpAt,20)||null;
-      const result=await env.DB.prepare("INSERT INTO deal_activities(deal_id,company_id,contact_id,type,subject,body,owner,outcome,happened_at,follow_up_at,source,thread_key,external_id,pinned,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").bind(dealId,deal.resolved_company_id?Number(deal.resolved_company_id):null,contactId,type,text(body.subject,240),content,text(body.owner,200)||user.email,text(body.outcome,1000),new Date(happened).toISOString(),follow,"Manual",text(body.threadKey,240)||null,null,bool(body.pinned)?1:0,now,now).run();
+      const result=await env.DB.prepare("INSERT INTO deal_activities(deal_id,company_id,contact_id,type,subject,body,owner,outcome,happened_at,follow_up_at,source,thread_key,external_id,response_expected,pinned,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").bind(dealId,deal.resolved_company_id?Number(deal.resolved_company_id):null,contactId,type,text(body.subject,240),content,text(body.owner,200)||user.email,text(body.outcome,1000),new Date(happened).toISOString(),follow,"Manual",text(body.threadKey,240)||null,null,bool(body.responseExpected)?1:0,bool(body.pinned)?1:0,now,now).run();
       if(follow)await env.DB.prepare("INSERT INTO deal_tasks(deal_id,title,owner,due_date,created_at) VALUES (?,?,?,?,?)").bind(dealId,text(body.followUpTitle,240)||`Follow up: ${text(body.subject,180)||type}`,text(body.owner,200)||user.email,follow.slice(0,10),now).run();
-      await audit(user,action,"deal_activity",result.meta.last_row_id,`Recorded ${type}`,{dealId,contactId,outcome:body.outcome,followUpAt:follow});
+      await audit(user,action,"deal_activity",result.meta.last_row_id,`Recorded ${type}`,{dealId,contactId,outcome:body.outcome,followUpAt:follow,responseExpected:bool(body.responseExpected)});
     }else if(action==="linkContactActivity"){
       const sourceId=id(body.activityId),source=await one("SELECT * FROM activities WHERE id=?",sourceId);if(!source)throw new Error("Activity not found.");const deal=await dealRecord(dealId);
       await env.DB.prepare("INSERT INTO deal_activities(deal_id,company_id,contact_id,type,subject,body,owner,outcome,happened_at,source,external_id,pinned,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,'Contact activity',?,0,?,?)").bind(dealId,deal.resolved_company_id?Number(deal.resolved_company_id):null,Number(source.contact_id),String(source.type),String(source.note).slice(0,240),String(source.note),user.email,"",String(source.happened_at),String(sourceId),now,now).run();
