@@ -1,6 +1,8 @@
 import { env } from "cloudflare:workers";
 import { audit, can, canAdmin, crmUser, sha256 } from "@/lib/crm-auth";
 import { calculateRelationshipHealth } from "@/lib/relationship-health";
+import { defaultPipeline, type Stage } from "@/lib/sales-rules";
+import { calculateStakeholderCoverage, dealStakeholderRoles } from "@/lib/stakeholder-coverage";
 
 type Row=Record<string,unknown>;
 const text=(value:unknown,max=4000)=>String(value??"").trim().slice(0,max);
@@ -16,6 +18,15 @@ async function dealRecord(dealId:number){
   return deal;
 }
 
+async function coverageStage(deal:Row){
+  const saved=await one("SELECT stages FROM sales_pipelines WHERE id=?",String(deal.pipeline_key||"default"));
+  let stages:Stage[]=String(deal.pipeline_key||"default")==="default"?defaultPipeline.stages:[];
+  if(saved?.stages)try{const parsed=JSON.parse(String(saved.stages));if(Array.isArray(parsed))stages=parsed}catch{}
+  const current=stages.find(stage=>stage.key===String(deal.stage_key)||stage.name===String(deal.stage));
+  const kind=(current?.kind||(["Won","Lost"].includes(String(deal.status))?String(deal.status):"Open")) as "Open"|"Won"|"Lost",open=stages.filter(stage=>stage.kind==="Open"),index=kind==="Open"?Math.max(0,open.findIndex(stage=>stage===current)):Math.max(0,open.length-1);
+  return {key:current?.key||String(deal.stage_key||deal.stage),name:current?.name||String(deal.stage),index,openStageCount:Math.max(1,open.length),probability:Number(current?.probability??deal.probability??0),kind};
+}
+
 function calculateHealth(deal:Row,tasks:Row[],activities:Row[],stakeholders:Row[],insights:Row[],reviews:Row[],lineItems:Row[]){
   let score=100;const reasons:string[]=[];const today=new Date().toISOString().slice(0,10);
   const subtract=(points:number,reason:string)=>{score-=points;reasons.push(reason)};
@@ -24,7 +35,7 @@ function calculateHealth(deal:Row,tasks:Row[],activities:Row[],stakeholders:Row[
   if(tasks.some(task=>!task.completed&&String(task.due_date)<today))subtract(15,"Overdue deal task");
   const recent=activities.some(activity=>Date.parse(String(activity.happened_at))>=Date.now()-14*86400000);
   if(String(deal.status)==="Open"&&!recent)subtract(15,"No activity in 14 days");
-  if(!stakeholders.length)subtract(10,"No deal stakeholders");
+  if(!stakeholders.some(item=>item.active===undefined||Boolean(item.active)))subtract(10,"No active deal stakeholders");
   if(insights.some(item=>item.kind==="Risk"&&item.status!=="Resolved"&&item.severity==="High"))subtract(15,"Unresolved high risk");
   if(["Proposal","Negotiation"].includes(String(deal.stage))&&!lineItems.length)subtract(10,"No products or line items");
   if(reviews.some(review=>review.status==="Rejected"))subtract(10,"Approval rejected");
@@ -75,7 +86,7 @@ export async function GET(request:Request){
         FROM activities a JOIN contacts c ON c.id=a.contact_id WHERE a.contact_id=? AND a.type IN ('Email','Email received','Email sent','Meeting','Calendar meeting','Call')
         AND NOT EXISTS(SELECT 1 FROM deal_activities da WHERE da.source='Contact activity' AND da.external_id=CAST(a.id AS TEXT)) ORDER BY a.happened_at DESC LIMIT 50`,Number(deal.contact_id)):Promise.resolve([]),
     ]);
-    const health=calculateHealth(deal,tasks,activities,stakeholders,insights,reviews,lineItems),relationship=await relationshipHealth(dealId,deal,tasks,activities,stakeholders);
+    const health=calculateHealth(deal,tasks,activities,stakeholders,insights,reviews,lineItems),relationship=await relationshipHealth(dealId,deal,tasks,activities,stakeholders),coverage=calculateStakeholderCoverage({deal,stage:await coverageStage(deal),stakeholders,activities});
     const timeline=[
       ...activities.map(item=>({id:`activity-${item.id}`,kind:"Activity",type:item.type,title:item.subject||item.type,detail:item.body,owner:item.owner,date:item.happened_at,pinned:Boolean(item.pinned)})),
       ...notes.map(item=>({id:`note-${item.id}`,kind:item.kind,title:item.kind,detail:item.body,owner:item.owner,date:item.created_at,pinned:Boolean(item.pinned)})),
@@ -84,7 +95,7 @@ export async function GET(request:Request){
       ...documents.map(item=>({id:`document-${item.id}`,kind:"Document",title:item.title,detail:`${item.category} · v${item.latest_version}`,owner:item.uploaded_by,date:item.uploaded_at,pinned:false})),
       ...reviews.map(item=>({id:`review-${item.id}`,kind:"Review",title:`${item.review_type}: ${item.status}`,detail:item.comments,owner:item.approver,date:item.decided_at||item.requested_at,pinned:false})),
     ].sort((a,b)=>Number(b.pinned)-Number(a.pinned)||String(b.date).localeCompare(String(a.date)));
-    return Response.json({deal,health,relationshipHealth:relationship,notes,activities,tasks,history,stakeholders,lineItems,insights,reviews,proposals,documents,unassigned,timeline,permissions:{edit:can(user,"records.edit"),delete:can(user,"records.delete"),upload:can(user,"documents.upload"),sensitive:can(user,"documents.manage_sensitive"),admin:canAdmin(user.role)}});
+    return Response.json({deal,health,relationshipHealth:relationship,stakeholderCoverage:coverage,stakeholderRoles:dealStakeholderRoles,notes,activities,tasks,history,stakeholders,lineItems,insights,reviews,proposals,documents,unassigned,timeline,permissions:{edit:can(user,"records.edit"),delete:can(user,"records.delete"),upload:can(user,"documents.upload"),sensitive:can(user,"documents.manage_sensitive"),admin:canAdmin(user.role)}});
   }catch(error){return Response.json({error:error instanceof Error?error.message:"Deal workspace could not load."},{status:400})}
 }
 
@@ -112,11 +123,14 @@ export async function POST(request:Request){
       await env.DB.prepare("INSERT INTO deal_activities(deal_id,company_id,contact_id,type,subject,body,owner,outcome,happened_at,source,external_id,pinned,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,'Contact activity',?,0,?,?)").bind(dealId,deal.resolved_company_id?Number(deal.resolved_company_id):null,Number(source.contact_id),String(source.type),String(source.note).slice(0,240),String(source.note),user.email,"",String(source.happened_at),String(sourceId),now,now).run();
       await audit(user,action,"deal_activity",dealId,"Associated contact activity with deal",{sourceId});
     }else if(action==="saveStakeholder"){
-      const contactId=id(body.contactId),role=text(body.role,80);if(!role)throw new Error("Choose a stakeholder role.");if(bool(body.isPrimary))await env.DB.prepare("UPDATE deal_stakeholders SET is_primary=0 WHERE deal_id=?").bind(dealId).run();
-      await env.DB.prepare("INSERT INTO deal_stakeholders(deal_id,contact_id,role,notes,is_primary,created_at,updated_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT(deal_id,contact_id) DO UPDATE SET role=excluded.role,notes=excluded.notes,is_primary=excluded.is_primary,updated_at=excluded.updated_at").bind(dealId,contactId,role,text(body.notes,2000),bool(body.isPrimary)?1:0,now,now).run();
-      if(bool(body.isPrimary))await env.DB.prepare("UPDATE deals SET contact_id=?,updated_at=? WHERE id=?").bind(contactId,now,dealId).run();await audit(user,action,"deal_stakeholder",contactId,"Updated deal stakeholder",{dealId,role,isPrimary:bool(body.isPrimary)});
+      const contactId=id(body.contactId),role=text(body.role,80),primary=bool(body.isPrimary),isActive=primary||!Object.hasOwn(body,"active")||bool(body.active);if(!dealStakeholderRoles.includes(role as (typeof dealStakeholderRoles)[number]))throw new Error("Choose a standard stakeholder role.");if(primary)await env.DB.prepare("UPDATE deal_stakeholders SET is_primary=0 WHERE deal_id=?").bind(dealId).run();
+      await env.DB.prepare("INSERT INTO deal_stakeholders(deal_id,contact_id,role,notes,is_primary,active,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(deal_id,contact_id) DO UPDATE SET role=excluded.role,notes=excluded.notes,is_primary=excluded.is_primary,active=excluded.active,updated_at=excluded.updated_at").bind(dealId,contactId,role,text(body.notes,2000),primary?1:0,isActive?1:0,now,now).run();
+      if(primary)await env.DB.prepare("UPDATE deals SET contact_id=?,updated_at=? WHERE id=?").bind(contactId,now,dealId).run();await audit(user,action,"deal_stakeholder",contactId,"Updated deal stakeholder",{dealId,role,isPrimary:primary,active:isActive});
+    }else if(action==="toggleStakeholderActive"){
+      const stakeholderId=id(body.id),before=await one("SELECT * FROM deal_stakeholders WHERE id=? AND deal_id=?",stakeholderId,dealId);if(!before)throw new Error("Stakeholder not found.");const isActive=bool(body.active);
+      await env.DB.batch([env.DB.prepare("UPDATE deal_stakeholders SET active=?,is_primary=CASE WHEN ?=0 THEN 0 ELSE is_primary END,updated_at=? WHERE id=? AND deal_id=?").bind(isActive?1:0,isActive?1:0,now,stakeholderId,dealId),...(!isActive&&before.is_primary?[env.DB.prepare("UPDATE deals SET contact_id=NULL,updated_at=? WHERE id=? AND contact_id=?").bind(now,dealId,Number(before.contact_id))]:[])]);await audit(user,action,"deal_stakeholder",stakeholderId,isActive?"Restored deal stakeholder":"Marked deal stakeholder inactive",{dealId,before,active:isActive});
     }else if(action==="removeStakeholder"){
-      const stakeholderId=id(body.id);if(!can(user,"records.delete"))return Response.json({error:"Delete permission is required."},{status:403});await env.DB.prepare("DELETE FROM deal_stakeholders WHERE id=? AND deal_id=?").bind(stakeholderId,dealId).run();await audit(user,action,"deal_stakeholder",stakeholderId,"Removed deal stakeholder",{dealId});
+      const stakeholderId=id(body.id);if(!can(user,"records.delete"))return Response.json({error:"Delete permission is required."},{status:403});const before=await one("SELECT * FROM deal_stakeholders WHERE id=? AND deal_id=?",stakeholderId,dealId);if(!before)throw new Error("Stakeholder not found.");await env.DB.batch([env.DB.prepare("DELETE FROM deal_stakeholders WHERE id=? AND deal_id=?").bind(stakeholderId,dealId),...(before.is_primary?[env.DB.prepare("UPDATE deals SET contact_id=NULL,updated_at=? WHERE id=? AND contact_id=?").bind(now,dealId,Number(before.contact_id))]:[])]);await audit(user,action,"deal_stakeholder",stakeholderId,"Removed deal stakeholder",{dealId,before});
     }else if(action==="saveLineItem"){
       const result=await env.DB.prepare("INSERT INTO deal_line_items(deal_id,name,sku,quantity,unit_price,discount_percent,notes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)").bind(dealId,text(body.name,240)||"Line item",text(body.sku,120),Math.max(1,Math.round(Number(body.quantity)||1)),money(body.unitPrice),Math.min(100,Math.max(0,Math.round(Number(body.discountPercent)||0))),text(body.notes,1000),now,now).run();await audit(user,action,"deal_line_item",result.meta.last_row_id,"Added a deal line item",{dealId,name:body.name});
     }else if(action==="deleteLineItem"){

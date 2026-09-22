@@ -50,7 +50,7 @@ export function calculateRelationshipHealth(input:{deal:HealthRow;activities:Hea
   const meetingPoints=meetingDays==null?0:meetingDays<=30?15:meetingDays>=60?0:points(15*(60-meetingDays)/30,15);
   components.push({key:"meeting-cadence",label:"Meeting cadence",weight:15,points:meetingPoints,evidence:lastMeeting?[`Last completed meeting was ${Math.floor(meetingDays!)} days ago; the default cadence is 30 days.`]:[],dataGaps:lastMeeting?[]:["No completed meeting with a recorded outcome is available."]});
 
-  const stakeholderCount=new Set(input.stakeholders.map(row=>String(value(row,"contact_id","contactId")??value(row,"id")??""))).size;
+  const stakeholderCount=new Set(input.stakeholders.filter(row=>value(row,"active")===undefined||truthy(row,"active")).map(row=>String(value(row,"contact_id","contactId")??value(row,"id")??""))).size;
   const stakeholderPoints=stakeholderCount>=4?20:stakeholderCount===3?18:stakeholderCount===2?14:stakeholderCount===1?8:0;
   components.push({key:"active-stakeholders",label:"Active stakeholders",weight:20,points:stakeholderPoints,evidence:stakeholderCount?[`${stakeholderCount} active deal stakeholder${stakeholderCount===1?" is":"s are"} assigned.`]:[],dataGaps:stakeholderCount?[]:["No active stakeholder is assigned to the deal."]});
 

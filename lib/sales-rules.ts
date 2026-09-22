@@ -11,7 +11,7 @@ export const defaultPipeline:Pipeline = {id:"default",name:"New business",stages
   {key:"Lost",name:"Lost",probability:0,kind:"Lost"},
 ]};
 export const signalPoints:Record<string,number> = {"Strategic initiative":20,"Engaged conversation":20,"Budget confirmed":30,"Demo request":40,"RFP / buying process":60,"Project paused":-40,"General news":0};
-export const relationshipRoles = ["Decision-maker","Champion","Blocker","Influencer","Colleague"];
+export const relationshipRoles = ["Decision-maker","Economic buyer","Technical buyer","Champion","Blocker","Influencer","Legal/procurement","User","Other"];
 export function qualification(fit:number,intent:number) {return intent>=60&&fit>=50?"Hot":intent>=20?"Lukewarm":"Cold";}
 export function validateStages(value:unknown):Stage[] {
   if(!Array.isArray(value)||value.length<3||value.length>16)throw new Error("Use 3–16 stages, including open, won and lost outcomes.");
