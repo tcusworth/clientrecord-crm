@@ -57,6 +57,11 @@ export async function GET(request:Request){
         ORDER BY date DESC LIMIT 150`,accountId,accountId,accountId,accountId,accountId,accountId,accountId,accountId);
       return Response.json({timeline});
     }
+    await db().prepare(`INSERT INTO companies(name,updated_at)
+      SELECT MIN(trim(c.company)),datetime('now') FROM contacts c
+      WHERE trim(c.company)<>'' AND NOT EXISTS(
+        SELECT 1 FROM companies existing WHERE lower(existing.name)=lower(trim(c.company))
+      ) GROUP BY lower(trim(c.company))`).run();
     const [companies,contacts,stakeholders,deals,tasks,history,signals,alerts,pipe,customFields,customValues]=await Promise.all([
       rows("SELECT * FROM companies ORDER BY name"),
       rows("SELECT id,first_name||' '||last_name AS name,email,company,title FROM contacts ORDER BY first_name,last_name"),
