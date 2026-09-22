@@ -96,8 +96,10 @@ export async function POST(request: Request) {
     if (action === "runAutomations") return Response.json(await runDueAutomations(user.email));
     if (action === "createField") {
       if (!canAdmin(user.role)) return Response.json({ error: "Admin access is required." }, { status: 403 });
-      const name = clean(body.name), key = clean(body.fieldKey).toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, ""); if (!name || !key) return Response.json({ error: "Field name is required." }, { status: 400 });
-      const result = await env.DB.prepare("INSERT INTO custom_field_definitions (entity_type,name,field_key,field_type,options,created_at) VALUES (?,?,?,?,?,datetime('now'))").bind(clean(body.entityType, "contact"), name, key, clean(body.fieldType, "text"), JSON.stringify(clean(body.options).split(",").map(v => v.trim()).filter(Boolean))).run();
+      const name = clean(body.name), key = (clean(body.fieldKey)||name).toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, ""), entityType=clean(body.entityType,"contact"), fieldType=clean(body.fieldType,"text"), options=clean(body.options).split(",").map(v=>v.trim()).filter(Boolean); if (!name || !key) return Response.json({ error: "Field name is required." }, { status: 400 });
+      if(!["contact","company","deal"].includes(entityType)||!["text","number","date","select","boolean"].includes(fieldType))return Response.json({error:"Choose a supported record and field type."},{status:400});
+      if(fieldType==="select"&&!options.length)return Response.json({error:"Add at least one option for a select field."},{status:400});
+      const result = await env.DB.prepare("INSERT INTO custom_field_definitions (entity_type,name,field_key,field_type,options,created_at) VALUES (?,?,?,?,?,datetime('now'))").bind(entityType, name, key, fieldType, JSON.stringify(fieldType==="select"?options:[])).run();
       await audit(user, action, "custom_field", result.meta.last_row_id, `Created custom field ${name}`, body); return Response.json({ id: result.meta.last_row_id }, { status: 201 });
     }
     if (action === "setFieldValue") {

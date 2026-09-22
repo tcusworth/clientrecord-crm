@@ -1,0 +1,51 @@
+/* eslint-disable @next/next/no-assign-module-variable */
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import vm from "node:vm";
+import { DatabaseSync } from "node:sqlite";
+import ts from "typescript";
+
+const sqlite=new DatabaseSync(":memory:");
+sqlite.exec("PRAGMA foreign_keys=ON");
+for(const file of fs.readdirSync("drizzle").filter(file=>file.endsWith(".sql")).sort())sqlite.exec(fs.readFileSync(`drizzle/${file}`,"utf8"));
+const DB={
+  prepare(sql){return{args:[],bind(...args){this.args=args;return this},async all(){return{results:sqlite.prepare(sql).all(...this.args)}},async first(){return sqlite.prepare(sql).get(...this.args)||null},async run(){const result=sqlite.prepare(sql).run(...this.args);return{meta:{last_row_id:Number(result.lastInsertRowid),changes:result.changes}}}}},
+  async batch(statements){sqlite.exec("BEGIN");try{const results=[];for(const statement of statements)results.push(await statement.run());sqlite.exec("COMMIT");return results}catch(error){sqlite.exec("ROLLBACK");throw error}},
+};
+const env={DB,CRM_ALLOWED_EMAILS:"owner@example.com"},modules={};
+function load(file){if(modules[file])return modules[file];const module={exports:{}};const code=ts.transpileModule(fs.readFileSync(file,"utf8"),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;const require=name=>name==="cloudflare:workers"?{env}:name.startsWith("@/")?load(name.slice(2)+".ts"):(()=>{throw new Error(`Unexpected module ${name}`)})();vm.runInThisContext(`(function(require,module,exports){${code}\n})`,{filename:file})(require,module,module.exports);modules[file]=module.exports;return module.exports}
+
+sqlite.exec(`
+INSERT INTO contacts(id,first_name,last_name,email,company,title,stage,tags,created_at,updated_at) VALUES
+ (1,'Alex','Owner','alex@example.com','Acme','Director','Customer','[]','2026-01-01','2026-01-01'),
+ (2,'Alex','Duplicate','duplicate@example.com','Acme','','Lead','[]','2026-01-01','2026-01-01');
+INSERT INTO custom_field_definitions(id,entity_type,name,field_key,field_type,options,created_at) VALUES
+ (101,'contact','Contract renewal','contract_renewal','date','[]','2026-01-01'),
+ (102,'contact','Buying role','buying_role','select','["Champion","Decision-maker"]','2026-01-01'),
+ (103,'company','Customer segment','customer_segment','text','[]','2026-01-01'),
+ (104,'company','Shared status','shared_status','text','[]','2026-01-01'),
+ (105,'contact','Shared status','shared_status','text','[]','2026-01-01');
+`);
+assert.throws(()=>sqlite.exec("INSERT INTO custom_field_definitions(entity_type,name,field_key,field_type,options,created_at) VALUES ('contact','Duplicate','shared_status','text','[]','2026-01-01')"));
+
+const {POST,GET}=load("app/api/crm/route.ts");
+const headers={"oai-authenticated-user-id":"owner","oai-authenticated-user-email":"owner@example.com","content-type":"application/json"};
+async function post(payload,expected=200){const response=await POST(new Request("https://test/api/crm",{method:"POST",headers,body:JSON.stringify(payload)})),body=await response.json();assert.equal(response.status,expected,JSON.stringify(body));return body}
+const contact={action:"updateContact",id:1,firstName:"Alex",lastName:"Owner",email:"alex@example.com",company:"Acme",title:"Director",stage:"Customer",tags:"priority",customField_101:"2027-04-30",customField_102:"Champion"};
+await post(contact);
+assert.equal(sqlite.prepare("SELECT value FROM custom_field_values WHERE definition_id=101 AND entity_type='contact' AND entity_id=1").get().value,"2027-04-30");
+assert.equal(sqlite.prepare("SELECT value FROM custom_field_values WHERE definition_id=102 AND entity_type='contact' AND entity_id=1").get().value,"Champion");
+assert.equal(sqlite.prepare("SELECT COUNT(*) count FROM custom_field_values WHERE definition_id=103").get().count,0);
+await post({...contact,customField_101:"",customField_102:"Decision-maker"});
+assert.equal(sqlite.prepare("SELECT COUNT(*) count FROM custom_field_values WHERE definition_id=101").get().count,0);
+assert.equal(sqlite.prepare("SELECT value FROM custom_field_values WHERE definition_id=102 AND entity_id=1").get().value,"Decision-maker");
+sqlite.exec("INSERT INTO custom_field_values(definition_id,entity_type,entity_id,value,updated_at) VALUES (101,'contact',2,'2028-01-15','2026-01-02')");
+await post({action:"mergeContacts",keepId:1,mergeId:2});
+assert.equal(sqlite.prepare("SELECT value FROM custom_field_values WHERE definition_id=101 AND entity_id=1").get().value,"2028-01-15");
+assert.equal(sqlite.prepare("SELECT COUNT(*) count FROM custom_field_values WHERE entity_type='contact' AND entity_id=2").get().count,0);
+const response=await GET(new Request("https://test/api/crm",{headers})),data=await response.json();
+assert.equal(response.status,200,JSON.stringify(data));
+assert.equal(data.customFields.length,3);
+assert.ok(data.customFieldValues.every(value=>value.entityType==="contact"));
+assert.equal(sqlite.prepare("PRAGMA foreign_key_check").all().length,0);
+console.log("PASS: scoped definitions, contact custom field save, validation scope, clearing, merge preservation, API reads, and FK integrity.");
