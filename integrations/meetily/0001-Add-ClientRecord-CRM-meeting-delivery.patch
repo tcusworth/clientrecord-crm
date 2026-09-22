@@ -1,0 +1,332 @@
+From 7e5c616434ff5380dd21c34ad3f949723a9c0dcc Mon Sep 17 00:00:00 2001
+From: ClientRecord CRM <engineering@clientrecordcrm.com>
+Date: Tue, 22 Sep 2026 20:46:03 +0000
+Subject: [PATCH] Add ClientRecord CRM meeting delivery
+
+---
+ ...922000000_add_clientrecord_integration.sql |   9 ++
+ frontend/src-tauri/src/clientrecord.rs        | 142 ++++++++++++++++++
+ frontend/src-tauri/src/lib.rs                 |   5 +
+ frontend/src/app/settings/page.tsx            |   7 +-
+ .../components/ClientRecordIntegration.tsx    |  55 +++++++
+ .../meeting-details/useSummaryGeneration.ts   |  15 ++
+ 6 files changed, 232 insertions(+), 1 deletion(-)
+ create mode 100644 frontend/src-tauri/migrations/20260922000000_add_clientrecord_integration.sql
+ create mode 100644 frontend/src-tauri/src/clientrecord.rs
+ create mode 100644 frontend/src/components/ClientRecordIntegration.tsx
+
+diff --git a/frontend/src-tauri/migrations/20260922000000_add_clientrecord_integration.sql b/frontend/src-tauri/migrations/20260922000000_add_clientrecord_integration.sql
+new file mode 100644
+index 0000000..94bc322
+--- /dev/null
++++ b/frontend/src-tauri/migrations/20260922000000_add_clientrecord_integration.sql
+@@ -0,0 +1,9 @@
++CREATE TABLE IF NOT EXISTS clientrecord_integration (
++    id INTEGER PRIMARY KEY CHECK (id = 1),
++    endpoint TEXT NOT NULL DEFAULT 'https://clientrecordcrm.com/api/integrations/meetily/meetings',
++    api_token TEXT NOT NULL DEFAULT '',
++    cf_access_client_id TEXT NOT NULL DEFAULT '',
++    cf_access_client_secret TEXT NOT NULL DEFAULT '',
++    auto_send INTEGER NOT NULL DEFAULT 1,
++    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
++);
+diff --git a/frontend/src-tauri/src/clientrecord.rs b/frontend/src-tauri/src/clientrecord.rs
+new file mode 100644
+index 0000000..d88289a
+--- /dev/null
++++ b/frontend/src-tauri/src/clientrecord.rs
+@@ -0,0 +1,142 @@
++use crate::state::AppState;
++use serde::{Deserialize, Serialize};
++use serde_json::{json, Value};
++use sqlx::Row;
++use tauri::State;
++
++const DEFAULT_ENDPOINT: &str = "https://clientrecordcrm.com/api/integrations/meetily/meetings";
++
++#[derive(Debug, Clone)]
++struct ClientRecordConfig {
++    endpoint: String,
++    api_token: String,
++    cf_access_client_id: String,
++    cf_access_client_secret: String,
++    auto_send: bool,
++}
++
++#[derive(Debug, Serialize)]
++#[serde(rename_all = "camelCase")]
++pub struct ClientRecordConfigView {
++    endpoint: String,
++    token_configured: bool,
++    cloudflare_access_configured: bool,
++    auto_send: bool,
++}
++
++#[derive(Debug, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct ClientRecordDelivery {
++    status: String,
++    event_id: Option<String>,
++    meeting_id: Option<String>,
++    deal_id: Option<i64>,
++    duplicate: Option<bool>,
++}
++
++async fn read_config(state: &State<'_, AppState>) -> Result<ClientRecordConfig, String> {
++    let row = sqlx::query("SELECT endpoint,api_token,cf_access_client_id,cf_access_client_secret,auto_send FROM clientrecord_integration WHERE id=1")
++        .fetch_optional(state.db_manager.pool()).await.map_err(|error| error.to_string())?;
++    Ok(match row {
++        Some(row) => ClientRecordConfig {
++            endpoint: row.try_get("endpoint").unwrap_or_else(|_| DEFAULT_ENDPOINT.to_string()),
++            api_token: row.try_get("api_token").unwrap_or_default(),
++            cf_access_client_id: row.try_get("cf_access_client_id").unwrap_or_default(),
++            cf_access_client_secret: row.try_get("cf_access_client_secret").unwrap_or_default(),
++            auto_send: row.try_get::<i64, _>("auto_send").unwrap_or(1) != 0,
++        },
++        None => ClientRecordConfig { endpoint: DEFAULT_ENDPOINT.to_string(), api_token: String::new(), cf_access_client_id: String::new(), cf_access_client_secret: String::new(), auto_send: true },
++    })
++}
++
++fn validate(config: &ClientRecordConfig) -> Result<(), String> {
++    let parsed = url::Url::parse(&config.endpoint).map_err(|_| "Enter a valid ClientRecord receiver URL.".to_string())?;
++    if parsed.scheme() != "https" && parsed.host_str() != Some("localhost") && parsed.host_str() != Some("127.0.0.1") {
++        return Err("ClientRecord receiver URLs must use HTTPS.".to_string());
++    }
++    if config.api_token.is_empty() || !config.api_token.starts_with("cr_live_") {
++        return Err("Enter the ClientRecord connector token beginning cr_live_.".to_string());
++    }
++    if config.cf_access_client_id.is_empty() != config.cf_access_client_secret.is_empty() {
++        return Err("Enter both Cloudflare Access service-token values, or leave both blank.".to_string());
++    }
++    Ok(())
++}
++
++fn request(client: &reqwest::Client, config: &ClientRecordConfig, method: reqwest::Method) -> reqwest::RequestBuilder {
++    let mut builder = client.request(method, &config.endpoint).bearer_auth(&config.api_token);
++    if !config.cf_access_client_id.is_empty() {
++        builder = builder
++            .header("CF-Access-Client-Id", &config.cf_access_client_id)
++            .header("CF-Access-Client-Secret", &config.cf_access_client_secret);
++    }
++    builder
++}
++
++fn strings(value: &Value, keys: &[&str]) -> Vec<String> {
++    keys.iter().find_map(|key| value.get(*key)).and_then(Value::as_array).map(|items| items.iter().filter_map(|item| item.as_str().map(str::to_string).or_else(|| item.get("text").and_then(Value::as_str).map(str::to_string))).collect()).unwrap_or_default()
++}
++
++fn summary_markdown(value: &Value) -> String {
++    if let Some(markdown) = value.get("markdown").and_then(Value::as_str) { return markdown.to_string(); }
++    let mut output = String::new();
++    for (key, title) in [("main_topics", "Main topics"), ("key_points", "Key points"), ("decisions", "Decisions"), ("action_items", "Action items")] {
++        let items = strings(value, &[key]);
++        if !items.is_empty() { output.push_str(&format!("## {title}\n\n{}\n\n", items.iter().map(|item| format!("- {item}")).collect::<Vec<_>>().join("\n"))); }
++    }
++    if output.is_empty() { serde_json::to_string_pretty(value).unwrap_or_default() } else { output }
++}
++
++#[tauri::command]
++pub async fn clientrecord_get_config(state: State<'_, AppState>) -> Result<ClientRecordConfigView, String> {
++    let config = read_config(&state).await?;
++    Ok(ClientRecordConfigView { endpoint: config.endpoint, token_configured: !config.api_token.is_empty(), cloudflare_access_configured: !config.cf_access_client_id.is_empty() && !config.cf_access_client_secret.is_empty(), auto_send: config.auto_send })
++}
++
++#[tauri::command]
++pub async fn clientrecord_save_config(
++    state: State<'_, AppState>, endpoint: String, api_token: String,
++    cf_access_client_id: String, cf_access_client_secret: String, auto_send: bool,
++) -> Result<ClientRecordConfigView, String> {
++    let previous = read_config(&state).await?;
++    let config = ClientRecordConfig {
++        endpoint: endpoint.trim().to_string(),
++        api_token: if api_token.trim().is_empty() { previous.api_token } else { api_token.trim().to_string() },
++        cf_access_client_id: if cf_access_client_id.trim().is_empty() { previous.cf_access_client_id } else { cf_access_client_id.trim().to_string() },
++        cf_access_client_secret: if cf_access_client_secret.trim().is_empty() { previous.cf_access_client_secret } else { cf_access_client_secret.trim().to_string() },
++        auto_send,
++    };
++    validate(&config)?;
++    sqlx::query("INSERT INTO clientrecord_integration(id,endpoint,api_token,cf_access_client_id,cf_access_client_secret,auto_send,updated_at) VALUES (1,?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(id) DO UPDATE SET endpoint=excluded.endpoint,api_token=excluded.api_token,cf_access_client_id=excluded.cf_access_client_id,cf_access_client_secret=excluded.cf_access_client_secret,auto_send=excluded.auto_send,updated_at=CURRENT_TIMESTAMP")
++        .bind(&config.endpoint).bind(&config.api_token).bind(&config.cf_access_client_id).bind(&config.cf_access_client_secret).bind(if config.auto_send { 1 } else { 0 })
++        .execute(state.db_manager.pool()).await.map_err(|error| error.to_string())?;
++    Ok(ClientRecordConfigView { endpoint: config.endpoint, token_configured: true, cloudflare_access_configured: !config.cf_access_client_id.is_empty(), auto_send: config.auto_send })
++}
++
++#[tauri::command]
++pub async fn clientrecord_test_connection(state: State<'_, AppState>) -> Result<String, String> {
++    let config = read_config(&state).await?; validate(&config)?;
++    let response = request(&reqwest::Client::new(), &config, reqwest::Method::GET).send().await.map_err(|error| format!("ClientRecord could not be reached: {error}"))?;
++    if !response.status().is_success() { return Err(format!("ClientRecord returned HTTP {}. Check the token and Cloudflare Access settings.", response.status())); }
++    Ok("Connected to ClientRecord".to_string())
++}
++
++#[tauri::command]
++pub async fn clientrecord_send_meeting(state: State<'_, AppState>, meeting_id: String, respect_auto_send: Option<bool>) -> Result<ClientRecordDelivery, String> {
++    let config = read_config(&state).await?;
++    if respect_auto_send.unwrap_or(false) && (!config.auto_send || config.api_token.is_empty()) { return Ok(ClientRecordDelivery { status: "Skipped".to_string(), event_id: None, meeting_id: None, deal_id: None, duplicate: None }); }
++    validate(&config)?;
++    let meeting = sqlx::query("SELECT id,title,created_at,updated_at FROM meetings WHERE id=?").bind(&meeting_id).fetch_optional(state.db_manager.pool()).await.map_err(|error| error.to_string())?.ok_or_else(|| "Meeting was not found.".to_string())?;
++    let transcript_rows = sqlx::query("SELECT transcript,timestamp FROM transcripts WHERE meeting_id=? ORDER BY COALESCE(audio_start_time,0),timestamp,id").bind(&meeting_id).fetch_all(state.db_manager.pool()).await.map_err(|error| error.to_string())?;
++    let transcript = transcript_rows.iter().map(|row| { let text:String=row.try_get("transcript").unwrap_or_default();let timestamp:String=row.try_get("timestamp").unwrap_or_default();if timestamp.is_empty(){text}else{format!("[{timestamp}] {text}")} }).collect::<Vec<_>>().join("\n");
++    let result = sqlx::query("SELECT result FROM summary_processes WHERE meeting_id=? AND lower(status)='completed'")
++        .bind(&meeting_id).fetch_optional(state.db_manager.pool()).await.map_err(|error| error.to_string())?
++        .and_then(|row| row.try_get::<Option<String>, _>("result").ok().flatten());
++    let summary_data:Value=result.as_deref().and_then(|raw| serde_json::from_str(raw).ok()).unwrap_or_else(|| json!({}));
++    let participants=strings(&summary_data,&["participants","attendees"]);
++    let payload=json!({"event":"meeting.summary.updated","source":"Meetily Community","sentAt":chrono::Utc::now().to_rfc3339(),"meeting":{"id":meeting.try_get::<String,_>("id").unwrap_or(meeting_id),"title":meeting.try_get::<String,_>("title").unwrap_or_else(|_|"Meetily meeting".to_string()),"startedAt":meeting.try_get::<String,_>("created_at").unwrap_or_else(|_|chrono::Utc::now().to_rfc3339()),"endedAt":meeting.try_get::<String,_>("updated_at").unwrap_or_else(|_|chrono::Utc::now().to_rfc3339()),"summary":summary_markdown(&summary_data),"summaryData":summary_data,"transcript":transcript,"decisions":strings(&summary_data,&["decisions"]),"nextSteps":strings(&summary_data,&["action_items","next_steps"]),"attendees":participants.into_iter().map(|name|json!({"name":name,"role":"Attendee"})).collect::<Vec<_>>()}});
++    let response=request(&reqwest::Client::new(),&config,reqwest::Method::POST).json(&payload).send().await.map_err(|error|format!("Meeting delivery failed: {error}"))?;
++    let status=response.status();let body=response.text().await.map_err(|error|error.to_string())?;
++    if !status.is_success(){return Err(format!("ClientRecord returned HTTP {status}: {}",body.chars().take(300).collect::<String>()));}
++    serde_json::from_str(&body).map_err(|error|format!("ClientRecord returned an invalid response: {error}"))
++}
+diff --git a/frontend/src-tauri/src/lib.rs b/frontend/src-tauri/src/lib.rs
+index 64a666f..d39af09 100644
+--- a/frontend/src-tauri/src/lib.rs
++++ b/frontend/src-tauri/src/lib.rs
+@@ -39,6 +39,7 @@ pub mod analytics;
+ pub mod api;
+ pub mod audio;
+ pub mod config;
++pub mod clientrecord;
+ pub mod console_utils;
+ pub mod database;
+ pub mod notifications;
+@@ -735,6 +736,10 @@ pub fn run() {
+             api::test_backend_connection,
+             api::debug_backend_connection,
+             api::open_external_url,
++            clientrecord::clientrecord_get_config,
++            clientrecord::clientrecord_save_config,
++            clientrecord::clientrecord_test_connection,
++            clientrecord::clientrecord_send_meeting,
+             // Custom OpenAI commands
+             api::api_save_custom_openai_config,
+             api::api_get_custom_openai_config,
+diff --git a/frontend/src/app/settings/page.tsx b/frontend/src/app/settings/page.tsx
+index c6b04b7..cadb8b7 100644
+--- a/frontend/src/app/settings/page.tsx
++++ b/frontend/src/app/settings/page.tsx
+@@ -1,7 +1,7 @@
+ 'use client';
+ 
+ import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
+-import { ArrowLeft, Settings2, Mic, Database as DatabaseIcon, SparkleIcon, FlaskConical } from 'lucide-react';
++import { ArrowLeft, Settings2, Mic, Database as DatabaseIcon, SparkleIcon, FlaskConical, Webhook } from 'lucide-react';
+ import { useRouter } from 'next/navigation';
+ import { invoke } from '@tauri-apps/api/core';
+ import { motion } from 'framer-motion';
+@@ -10,6 +10,7 @@ import { RecordingSettings } from '@/components/RecordingSettings';
+ import { PreferenceSettings } from '@/components/PreferenceSettings';
+ import { SummaryModelSettings } from '@/components/SummaryModelSettings';
+ import { BetaSettings } from '@/components/BetaSettings';
++import { ClientRecordIntegration } from '@/components/ClientRecordIntegration';
+ import { useConfig } from '@/contexts/ConfigContext';
+ import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+ 
+@@ -19,6 +20,7 @@ const TABS = [
+   { value: 'recording', label: 'Recordings', icon: Mic },
+   { value: 'Transcriptionmodels', label: 'Transcription', icon: DatabaseIcon },
+   { value: 'summaryModels', label: 'Summary', icon: SparkleIcon },
++  { value: 'clientRecord', label: 'ClientRecord', icon: Webhook },
+   { value: 'beta', label: 'Beta', icon: FlaskConical }
+ ] as const;
+ 
+@@ -124,6 +126,9 @@ export default function SettingsPage() {
+             <TabsContent value="summaryModels">
+               <SummaryModelSettings />
+             </TabsContent>
++            <TabsContent value="clientRecord">
++              <ClientRecordIntegration />
++            </TabsContent>
+             <TabsContent value="beta" className="mt-6">
+               <BetaSettings />
+             </TabsContent>
+diff --git a/frontend/src/components/ClientRecordIntegration.tsx b/frontend/src/components/ClientRecordIntegration.tsx
+new file mode 100644
+index 0000000..cc23b3b
+--- /dev/null
++++ b/frontend/src/components/ClientRecordIntegration.tsx
+@@ -0,0 +1,55 @@
++'use client';
++
++import { FormEvent, useEffect, useState } from 'react';
++import { invoke } from '@tauri-apps/api/core';
++import { toast } from 'sonner';
++import { Button } from '@/components/ui/button';
++
++type Config = { endpoint: string; tokenConfigured: boolean; cloudflareAccessConfigured: boolean; autoSend: boolean };
++
++export function ClientRecordIntegration() {
++  const [config, setConfig] = useState<Config | null>(null);
++  const [endpoint, setEndpoint] = useState('https://clientrecordcrm.com/api/integrations/meetily/meetings');
++  const [apiToken, setApiToken] = useState('');
++  const [clientId, setClientId] = useState('');
++  const [clientSecret, setClientSecret] = useState('');
++  const [autoSend, setAutoSend] = useState(true);
++  const [busy, setBusy] = useState('');
++
++  useEffect(() => {
++    void invoke<Config>('clientrecord_get_config').then(value => {
++      setConfig(value); setEndpoint(value.endpoint); setAutoSend(value.autoSend);
++    }).catch(error => toast.error('Could not load ClientRecord settings', { description: String(error) }));
++  }, []);
++
++  const save = async (event: FormEvent<HTMLFormElement>) => {
++    event.preventDefault(); setBusy('save');
++    try {
++      const value = await invoke<Config>('clientrecord_save_config', { endpoint, apiToken, cfAccessClientId: clientId, cfAccessClientSecret: clientSecret, autoSend });
++      setConfig(value); setApiToken(''); setClientId(''); setClientSecret('');
++      toast.success('ClientRecord connection saved');
++    } catch (error) { toast.error('Could not save ClientRecord settings', { description: String(error) }); }
++    finally { setBusy(''); }
++  };
++
++  const test = async () => {
++    setBusy('test');
++    try { await invoke('clientrecord_test_connection'); toast.success('Connected to ClientRecord'); }
++    catch (error) { toast.error('ClientRecord connection failed', { description: String(error) }); }
++    finally { setBusy(''); }
++  };
++
++  return <div className="mt-6 max-w-3xl rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
++    <div className="flex flex-wrap items-start justify-between gap-3">
++      <div><h2 className="text-xl font-semibold text-gray-900">ClientRecord CRM</h2><p className="mt-1 text-sm leading-6 text-gray-600">Send the finished transcript and summary directly to the matching CRM deal. Recorded audio is never uploaded.</p></div>
++      <span className={`rounded-full px-3 py-1 text-xs font-medium ${config?.tokenConfigured ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-800'}`}>{config?.tokenConfigured ? 'Configured' : 'Setup required'}</span>
++    </div>
++    <form onSubmit={save} className="mt-6 grid gap-4">
++      <label className="grid gap-1.5 text-sm font-medium text-gray-800">Receiver endpoint<input className="h-10 rounded-md border border-gray-300 px-3 font-normal" type="url" required value={endpoint} onChange={event => setEndpoint(event.target.value)} /></label>
++      <label className="grid gap-1.5 text-sm font-medium text-gray-800">ClientRecord connector token<input className="h-10 rounded-md border border-gray-300 px-3 font-normal" type="password" value={apiToken} onChange={event => setApiToken(event.target.value)} placeholder={config?.tokenConfigured ? 'Saved — leave blank to keep it' : 'cr_live_…'} /></label>
++      <div className="rounded-lg bg-gray-50 p-4"><h3 className="text-sm font-semibold text-gray-900">Cloudflare Access service token</h3><p className="mt-1 text-xs leading-5 text-gray-600">Required when ClientRecord is protected by Cloudflare Access. Create a Service Auth token and allow it in the ClientRecord Access application.</p><div className="mt-3 grid gap-3 sm:grid-cols-2"><label className="grid gap-1 text-xs font-medium text-gray-700">Client ID<input className="h-10 rounded-md border border-gray-300 bg-white px-3 text-sm font-normal" type="password" value={clientId} onChange={event => setClientId(event.target.value)} placeholder={config?.cloudflareAccessConfigured ? 'Saved — leave blank to keep' : 'Service token client ID'} /></label><label className="grid gap-1 text-xs font-medium text-gray-700">Client secret<input className="h-10 rounded-md border border-gray-300 bg-white px-3 text-sm font-normal" type="password" value={clientSecret} onChange={event => setClientSecret(event.target.value)} placeholder={config?.cloudflareAccessConfigured ? 'Saved — leave blank to keep' : 'Service token client secret'} /></label></div></div>
++      <label className="flex items-start gap-3 rounded-lg border border-gray-200 p-4"><input className="mt-1" type="checkbox" checked={autoSend} onChange={event => setAutoSend(event.target.checked)} /><span><strong className="block text-sm text-gray-900">Send automatically after summary generation</strong><span className="mt-1 block text-xs leading-5 text-gray-600">If ClientRecord cannot identify one deal, the meeting appears in its association queue for review.</span></span></label>
++      <div className="flex flex-wrap gap-3"><Button disabled={Boolean(busy)} type="submit">{busy === 'save' ? 'Saving…' : 'Save connection'}</Button><Button disabled={Boolean(busy) || !config?.tokenConfigured} type="button" variant="outline" onClick={() => void test()}>{busy === 'test' ? 'Testing…' : 'Test connection'}</Button></div>
++    </form>
++  </div>;
++}
+diff --git a/frontend/src/hooks/meeting-details/useSummaryGeneration.ts b/frontend/src/hooks/meeting-details/useSummaryGeneration.ts
+index 6ebaaa2..8759602 100644
+--- a/frontend/src/hooks/meeting-details/useSummaryGeneration.ts
++++ b/frontend/src/hooks/meeting-details/useSummaryGeneration.ts
+@@ -267,6 +267,21 @@ export function useSummaryGeneration({
+       if (meetingName && onMeetingUpdated) {
+         await onMeetingUpdated();
+       }
++      void invokeTauri<{ status: string }>('clientrecord_send_meeting', {
++        meetingId: meeting.id,
++        respectAutoSend: true,
++      }).then(result => {
++        if (result.status === 'Needs association') {
++          toast.info('Meeting sent to ClientRecord', {
++            description: 'Choose its deal from the ClientRecord association queue.',
++          });
++        }
++      }).catch(error => {
++        console.warn('ClientRecord automatic delivery was not completed:', error);
++        toast.warning('Summary saved, but ClientRecord delivery failed', {
++          description: String(error),
++        });
++      });
+       await finishGeneration(
+         generationId,
+         metadata.normalizationFallback ? 'fallback' : 'ok',
+-- 
+2.51.1
+

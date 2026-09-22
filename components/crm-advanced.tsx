@@ -34,7 +34,7 @@ export function AdvancedWorkspace({section,contacts}:{section:string;contacts:Co
   {section==="deals"&&<SalesFoundation section="deals"/>}
   {section==="automations"&&<Automations data={data} contacts={contacts} disabled={!editable||busy} run={run}/>} 
   {section==="reports"&&<Reports data={data} disabled={!editable||busy} run={run}/>} 
-  {section==="integrations"&&<><Heading eyebrow="Connected work" title="Mailbox and calendar synchronization"/><ConnectedAccounts/></>}
+  {section==="integrations"&&<><Heading eyebrow="Connected work" title="Accounts and meeting capture"/><ConnectedAccounts/></>}
   {section==="settings"&&<><BrandSettingsPanel admin={admin}/><SettingsPanel data={data} disabled={!editable||busy} admin={admin} run={run}/>{admin&&<AdministrationHardening/>}</>}
  </div>;
 }
