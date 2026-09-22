@@ -179,6 +179,7 @@ export async function POST(request:Request){
       // Preserve compatibility with older clients while converting the stored name into a durable relationship.
       if(!companyId&&str(b.company)){company=await db().prepare("SELECT id,name FROM companies WHERE lower(name)=lower(?) LIMIT 1").bind(str(b.company)).first<{id:number;name:string}>();if(company)companyId=company.id}
       if(companyId&&!company)throw new Error("Choose an existing company record.");
+      if(companyId&&contact&&!(await db().prepare("SELECT c.id FROM contacts c WHERE c.id=? AND (lower(trim(coalesce(c.company,'')))=lower(trim(?)) OR EXISTS (SELECT 1 FROM account_stakeholders s WHERE s.company_id=? AND s.contact_id=c.id)) LIMIT 1").bind(contact,company!.name,companyId).first()))throw new Error("Choose a contact associated with the selected company.");
       const required=stage.requiredFields||[];
       if(required.includes("company")&&!companyId)throw new Error(`${stage.name} requires a company.`);
       if(required.includes("contact")&&!contact)throw new Error(`${stage.name} requires a primary contact.`);
