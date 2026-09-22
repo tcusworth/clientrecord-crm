@@ -3,6 +3,7 @@ import { audit, can, canAdmin, crmUser, sha256 } from "@/lib/crm-auth";
 import { calculateRelationshipHealth } from "@/lib/relationship-health";
 import { defaultPipeline, type Stage } from "@/lib/sales-rules";
 import { calculateStakeholderCoverage, dealStakeholderRoles } from "@/lib/stakeholder-coverage";
+import { generateRecommendationCandidates, type RecommendationCandidate } from "@/lib/next-best-action";
 
 type Row=Record<string,unknown>;
 const text=(value:unknown,max=4000)=>String(value??"").trim().slice(0,max);
@@ -53,6 +54,28 @@ async function relationshipHealth(dealId:number,deal:Row,tasks:Row[],activities:
   return {score:Number(current.score),band:String(current.band),provisional:Boolean(current.provisional),confidence:String(current.confidence),confidenceScore:Number(current.confidenceScore),components:parse(current.componentsJson,calculation.components),evidence:parse(current.evidenceJson,calculation.evidence),dataGaps:parse(current.dataGapsJson,calculation.dataGaps),calculatedAt:String(current.calculatedAt),previousScore:previous?Number(previous.score):null,direction,change:delta,meaningfulInteractions:calculation.meaningfulInteractions,history:history.map(item=>({id:item.id,score:Number(item.score),band:item.band,provisional:Boolean(item.provisional),confidence:item.confidence,calculatedAt:item.calculatedAt}))};
 }
 
+const recommendationSelect=`SELECT r.*,t.title AS task_title,t.completed AS task_completed FROM deal_recommendations r LEFT JOIN deal_tasks t ON t.id=r.task_id`;
+const recommendationJson=(row:Row|null)=>{if(!row)return null;let evidence:string[]=[];try{const parsed=JSON.parse(String(row.evidence_json||"[]"));if(Array.isArray(parsed))evidence=parsed.map(String)}catch{}return {id:row.id,ruleKey:row.rule_key,fingerprint:row.fingerprint,action:row.action,reason:row.reason,evidence,priority:row.priority,suggestedOwner:row.suggested_owner,suggestedDueDate:row.suggested_due_date,status:row.status,taskId:row.task_id,taskTitle:row.task_title,taskCompleted:Boolean(row.task_completed),generatedAt:row.generated_at,acceptedAt:row.accepted_at,dismissedAt:row.dismissed_at,completedAt:row.completed_at,decidedBy:row.decided_by,decisionNote:row.decision_note,updatedAt:row.updated_at}};
+async function nextBestAction(dealId:number,deal:Row,tasks:Row[],reviews:Row[],proposals:Row[],insights:Row[],activities:Row[],coverage:ReturnType<typeof calculateStakeholderCoverage>){
+  const now=new Date(),stamp=now.toISOString();let current=await one(`${recommendationSelect} WHERE r.deal_id=? AND r.current_key='current' LIMIT 1`,dealId);
+  if(current?.task_id&&current.task_completed){await env.DB.prepare("UPDATE deal_recommendations SET status='Completed',current_key=NULL,completed_at=?,updated_at=? WHERE id=?").bind(stamp,stamp,String(current.id)).run();current=null}
+  if(current&&String(deal.status)!=="Open"){await env.DB.prepare("UPDATE deal_recommendations SET status='Superseded',current_key=NULL,updated_at=? WHERE id=?").bind(stamp,String(current.id)).run();current=null}
+  const candidates=generateRecommendationCandidates({deal,tasks,reviews,proposals,insights,activities,coverage,now});
+  if(current&&String(current.status)==="Active"&&!candidates.some(candidate=>candidate.fingerprint===String(current!.fingerprint))){await env.DB.prepare("UPDATE deal_recommendations SET status='Superseded',current_key=NULL,updated_at=? WHERE id=?").bind(stamp,String(current.id)).run();current=null}
+  if(!current&&String(deal.status)==="Open"){
+    const prior=await rows("SELECT fingerprint,status FROM deal_recommendations WHERE deal_id=?",dealId),suppressed=new Set(prior.filter(item=>["Dismissed","Completed"].includes(String(item.status))).map(item=>String(item.fingerprint)));
+    let candidate=candidates.find(item=>!suppressed.has(item.fingerprint));
+    if(!candidate){candidate={ruleKey:"review-plan",rank:10,action:"Review the deal plan and confirm the next action",reason:"All current rule-based recommendations have already been dismissed or completed, but the open deal still needs one active action.",evidence:[`Current stage: ${coverage.stage.name}.`,`${prior.length} earlier recommendation decisions are recorded.`],priority:"Normal",suggestedOwner:String(deal.owner||"Unassigned"),suggestedDueDate:new Date(now.getTime()+3*86400000).toISOString().slice(0,10),fingerprint:`review-plan:${now.toISOString().slice(0,10)}:${prior.length}`} as RecommendationCandidate}
+    await env.DB.batch([
+      env.DB.prepare("UPDATE deal_recommendations SET status='Superseded',current_key=NULL,updated_at=? WHERE deal_id=? AND current_key='current'").bind(stamp,dealId),
+      env.DB.prepare("INSERT INTO deal_recommendations(id,deal_id,rule_key,fingerprint,action,reason,evidence_json,priority,suggested_owner,suggested_due_date,status,current_key,task_id,generated_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?, 'Active','current',?,?,?) ON CONFLICT(deal_id,fingerprint) DO UPDATE SET action=excluded.action,reason=excluded.reason,evidence_json=excluded.evidence_json,priority=excluded.priority,suggested_owner=excluded.suggested_owner,suggested_due_date=excluded.suggested_due_date,status='Active',current_key='current',task_id=excluded.task_id,accepted_at=NULL,dismissed_at=NULL,completed_at=NULL,decided_by=NULL,decision_note='',generated_at=excluded.generated_at,updated_at=excluded.updated_at").bind(crypto.randomUUID(),dealId,candidate.ruleKey,candidate.fingerprint,candidate.action,candidate.reason,JSON.stringify(candidate.evidence),candidate.priority,candidate.suggestedOwner,candidate.suggestedDueDate,candidate.taskId||null,stamp,stamp),
+    ]);
+  }
+  current=await one(`${recommendationSelect} WHERE r.deal_id=? AND r.current_key='current' LIMIT 1`,dealId);
+  const history=await rows(`${recommendationSelect} WHERE r.deal_id=? ORDER BY r.generated_at DESC LIMIT 12`,dealId);
+  return {current:recommendationJson(current),history:history.map(item=>recommendationJson(item)),candidateCount:candidates.length};
+}
+
 export async function GET(request:Request){
   const user=await crmUser(request);if(!user)return Response.json({error:"Sign in is required."},{status:401});
   try{
@@ -86,7 +109,7 @@ export async function GET(request:Request){
         FROM activities a JOIN contacts c ON c.id=a.contact_id WHERE a.contact_id=? AND a.type IN ('Email','Email received','Email sent','Meeting','Calendar meeting','Call')
         AND NOT EXISTS(SELECT 1 FROM deal_activities da WHERE da.source='Contact activity' AND da.external_id=CAST(a.id AS TEXT)) ORDER BY a.happened_at DESC LIMIT 50`,Number(deal.contact_id)):Promise.resolve([]),
     ]);
-    const health=calculateHealth(deal,tasks,activities,stakeholders,insights,reviews,lineItems),relationship=await relationshipHealth(dealId,deal,tasks,activities,stakeholders),coverage=calculateStakeholderCoverage({deal,stage:await coverageStage(deal),stakeholders,activities});
+    const health=calculateHealth(deal,tasks,activities,stakeholders,insights,reviews,lineItems),relationship=await relationshipHealth(dealId,deal,tasks,activities,stakeholders),coverage=calculateStakeholderCoverage({deal,stage:await coverageStage(deal),stakeholders,activities}),nextAction=await nextBestAction(dealId,deal,tasks,reviews,proposals,insights,activities,coverage);
     const timeline=[
       ...activities.map(item=>({id:`activity-${item.id}`,kind:"Activity",type:item.type,title:item.subject||item.type,detail:item.body,owner:item.owner,date:item.happened_at,pinned:Boolean(item.pinned)})),
       ...notes.map(item=>({id:`note-${item.id}`,kind:item.kind,title:item.kind,detail:item.body,owner:item.owner,date:item.created_at,pinned:Boolean(item.pinned)})),
@@ -95,7 +118,7 @@ export async function GET(request:Request){
       ...documents.map(item=>({id:`document-${item.id}`,kind:"Document",title:item.title,detail:`${item.category} · v${item.latest_version}`,owner:item.uploaded_by,date:item.uploaded_at,pinned:false})),
       ...reviews.map(item=>({id:`review-${item.id}`,kind:"Review",title:`${item.review_type}: ${item.status}`,detail:item.comments,owner:item.approver,date:item.decided_at||item.requested_at,pinned:false})),
     ].sort((a,b)=>Number(b.pinned)-Number(a.pinned)||String(b.date).localeCompare(String(a.date)));
-    return Response.json({deal,health,relationshipHealth:relationship,stakeholderCoverage:coverage,stakeholderRoles:dealStakeholderRoles,notes,activities,tasks,history,stakeholders,lineItems,insights,reviews,proposals,documents,unassigned,timeline,permissions:{edit:can(user,"records.edit"),delete:can(user,"records.delete"),upload:can(user,"documents.upload"),sensitive:can(user,"documents.manage_sensitive"),admin:canAdmin(user.role)}});
+    return Response.json({deal,health,relationshipHealth:relationship,stakeholderCoverage:coverage,nextBestAction:nextAction,stakeholderRoles:dealStakeholderRoles,notes,activities,tasks,history,stakeholders,lineItems,insights,reviews,proposals,documents,unassigned,timeline,permissions:{edit:can(user,"records.edit"),delete:can(user,"records.delete"),upload:can(user,"documents.upload"),sensitive:can(user,"documents.manage_sensitive"),admin:canAdmin(user.role)}});
   }catch(error){return Response.json({error:error instanceof Error?error.message:"Deal workspace could not load."},{status:400})}
 }
 
@@ -147,6 +170,13 @@ export async function POST(request:Request){
       const reviewId=id(body.id),status=text(body.status,20);if(!["Approved","Rejected"].includes(status))throw new Error("Choose approved or rejected.");await env.DB.prepare("UPDATE deal_reviews SET status=?,comments=?,decided_at=? WHERE id=? AND deal_id=?").bind(status,text(body.comments,2000),now,reviewId,dealId).run();await audit(user,action,"deal_review",reviewId,`${status} deal review`,{dealId,status});
     }else if(action==="saveProposal"){
       const result=await env.DB.prepare("INSERT INTO deal_proposals(deal_id,title,amount,status,valid_until,document_id,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)").bind(dealId,text(body.title,240)||"Proposal",money(body.amount),text(body.status,30)||"Draft",text(body.validUntil,20)||null,text(body.documentId,80)||null,user.email,now,now).run();await audit(user,action,"deal_proposal",result.meta.last_row_id,"Added quote or proposal",{dealId,title:body.title,amount:body.amount});
+    }else if(action==="recommendationDecision"){
+      const recommendationId=text(body.id,80),decision=text(body.decision,20),record=await one("SELECT * FROM deal_recommendations WHERE id=? AND deal_id=? AND current_key='current'",recommendationId,dealId);if(!record)throw new Error("The active recommendation was not found.");if(!["Accept","Dismiss","Complete"].includes(decision))throw new Error("Choose accept, dismiss, or complete.");const note=text(body.note,1000),createTask=decision==="Accept"&&bool(body.createTask);
+      if(createTask&&!record.task_id){await env.DB.batch([env.DB.prepare("INSERT INTO deal_tasks(deal_id,title,owner,due_date,created_at) VALUES (?,?,?,?,?)").bind(dealId,String(record.action),String(record.suggested_owner||user.email),String(record.suggested_due_date),now),env.DB.prepare("UPDATE deal_recommendations SET status='Accepted',task_id=last_insert_rowid(),accepted_at=COALESCE(accepted_at,?),decided_by=?,decision_note=?,updated_at=? WHERE id=? AND deal_id=?").bind(now,user.email,note,now,recommendationId,dealId)])}
+      else if(decision==="Accept")await env.DB.prepare("UPDATE deal_recommendations SET status='Accepted',accepted_at=COALESCE(accepted_at,?),decided_by=?,decision_note=?,updated_at=? WHERE id=? AND deal_id=?").bind(now,user.email,note,now,recommendationId,dealId).run();
+      else if(decision==="Dismiss")await env.DB.prepare("UPDATE deal_recommendations SET status='Dismissed',current_key=NULL,dismissed_at=?,decided_by=?,decision_note=?,updated_at=? WHERE id=? AND deal_id=?").bind(now,user.email,note,now,recommendationId,dealId).run();
+      else {await env.DB.batch([env.DB.prepare("UPDATE deal_recommendations SET status='Completed',current_key=NULL,completed_at=?,decided_by=?,decision_note=?,updated_at=? WHERE id=? AND deal_id=?").bind(now,user.email,note,now,recommendationId,dealId),...(record.task_id?[env.DB.prepare("UPDATE deal_tasks SET completed=1 WHERE id=? AND deal_id=?").bind(Number(record.task_id),dealId)]:[])])}
+      await audit(user,action,"deal_recommendation",recommendationId,`${decision==="Complete"?"Completed":decision+"ed"} next-best action`,{dealId,decision,createTask,note,ruleKey:record.rule_key});
     }else if(action==="mergeCompany"){
       if(!canAdmin(user.role))return Response.json({error:"Admin access is required."},{status:403});const sourceId=id(body.sourceId),targetId=id(body.targetId);if(sourceId===targetId)throw new Error("Choose two different companies.");const source=await one("SELECT * FROM companies WHERE id=?",sourceId),target=await one("SELECT * FROM companies WHERE id=?",targetId);if(!source||!target)throw new Error("Company not found.");
       await env.DB.batch([

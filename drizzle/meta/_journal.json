@@ -85,6 +85,13 @@
       "when": 1790055341898,
       "tag": "0011_large_the_liberteens",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1790085712145,
+      "tag": "0012_funny_night_thrasher",
+      "breakpoints": true
     }
   ]
 }
