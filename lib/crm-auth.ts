@@ -61,9 +61,35 @@ export async function apiKeyUser(request: Request, requiredScope: string): Promi
   return { id:`api:${row.id}`, email:row.createdBy, role:"admin", permissions:rolePermissions.admin };
 }
 
+function safeAuditChanges(changes: unknown) {
+  const serialized = JSON.stringify(changes, (key, value) => /token|secret|html|body/i.test(key) ? "[redacted]" : value);
+  if (serialized.length <= 32000) return { serialized, value:JSON.parse(serialized) as unknown };
+
+  const source = changes && typeof changes === "object" && !Array.isArray(changes)
+    ? changes as Record<string, unknown>
+    : {};
+  const shape = Object.fromEntries(Object.entries(source).slice(0, 50).map(([key, value]) => [
+    key.slice(0, 100),
+    Array.isArray(value)
+      ? { type:"array", count:value.length }
+      : value === null
+        ? { type:"null" }
+        : { type:typeof value },
+  ]));
+  const value = {
+    truncated:true,
+    originalCharacters:serialized.length,
+    action:typeof source.action === "string" ? source.action.slice(0, 200) : undefined,
+    filename:typeof source.filename === "string" ? source.filename.slice(0, 500) : undefined,
+    recordCount:Array.isArray(source.contacts) ? source.contacts.length : undefined,
+    shape,
+  };
+  return { serialized:JSON.stringify(value), value };
+}
+
 export async function audit(user: CRMUser, action: string, entityType: string, entityId: unknown, summary: string, changes: unknown = {}) {
-  const safe = JSON.stringify(changes, (key, value) => /token|secret|html|body/i.test(key) ? "[redacted]" : value).slice(0, 32000);
+  const safe = safeAuditChanges(changes);
   await env.DB.prepare("INSERT INTO audit_logs (actor_email,action,entity_type,entity_id,summary,changes,created_at) VALUES (?,?,?,?,?,?,datetime('now'))")
-    .bind(user.email, action, entityType, entityId == null ? null : String(entityId), summary, safe).run();
-  await emitWebhook(action, { actorEmail:user.email, entityType, entityId:entityId==null?null:String(entityId), summary, changes:JSON.parse(safe) });
+    .bind(user.email, action, entityType, entityId == null ? null : String(entityId), summary, safe.serialized).run();
+  await emitWebhook(action, { actorEmail:user.email, entityType, entityId:entityId==null?null:String(entityId), summary, changes:safe.value });
 }
