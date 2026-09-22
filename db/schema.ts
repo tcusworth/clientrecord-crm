@@ -210,6 +210,12 @@ export const aiFeedbackEvents = sqliteTable("ai_feedback_events", {
   id: integer("id").primaryKey({autoIncrement:true}), artifactId: text("artifact_id").notNull().references(()=>aiArtifacts.id), action: text("action").notNull(),
   beforeJson: text("before_json").notNull().default("{}"), afterJson: text("after_json").notNull().default("{}"), comment: text("comment").notNull().default(""), actor: text("actor").notNull(), createdAt: text("created_at").notNull(),
 }, t => [index("ai_feedback_artifact_date").on(t.artifactId,t.createdAt)]);
+export const aiRecordFields = sqliteTable("ai_record_fields", {
+  id: text("id").primaryKey(), entityType: text("entity_type").notNull(), entityId: text("entity_id").notNull(), fieldKey: text("field_key").notNull(),
+  valueJson: text("value_json").notNull(), explanation: text("explanation").notNull().default(""), confidence: integer("confidence").notNull().default(0), citationsJson: text("citations_json").notNull().default("[]"),
+  sourceArtifactId: text("source_artifact_id").references(()=>aiArtifacts.id,{onDelete:"set null"}), manualOverride: integer("manual_override",{mode:"boolean"}).notNull().default(false), locked: integer("locked",{mode:"boolean"}).notNull().default(false),
+  updatedBy: text("updated_by").notNull(), updatedAt: text("updated_at").notNull(),
+}, t => [uniqueIndex("ai_record_field_unique").on(t.entityType,t.entityId,t.fieldKey),index("ai_record_fields_entity").on(t.entityType,t.entityId),index("ai_record_fields_artifact").on(t.sourceArtifactId)]);
 export const webhookEndpoints = sqliteTable("webhook_endpoints", {
   id: text("id").primaryKey(), name: text("name").notNull(), url: text("url").notNull(), events: text("events").notNull(), secretEncrypted: text("secret_encrypted").notNull(), active: integer("active",{mode:"boolean"}).notNull().default(true), lastStatus: integer("last_status"), lastTriggeredAt: text("last_triggered_at"), createdAt: text("created_at").notNull(),
 });
