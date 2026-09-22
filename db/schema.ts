@@ -38,14 +38,14 @@ export const consentEvents = sqliteTable("consent_events", {
   id: integer("id").primaryKey({ autoIncrement: true }), email: text("email").notNull(), status: text("status").notNull(), reason: text("reason").notNull(), source: text("source").notNull(), occurredAt: text("occurred_at").notNull(),
 });
 export const companies = sqliteTable("companies", {
-  website: text("website").notNull().default(""), industry: text("industry").notNull().default(""), tier: text("tier").notNull().default(""), territory: text("territory").notNull().default(""), owner: text("owner").notNull().default(""), tags: text("tags").notNull().default("[]"),
+  website: text("website").notNull().default(""), domain: text("domain").notNull().default(""), industry: text("industry").notNull().default(""), tier: text("tier").notNull().default(""), territory: text("territory").notNull().default(""), owner: text("owner").notNull().default(""), tags: text("tags").notNull().default("[]"),
   fitScore: integer("fit_score").notNull().default(0), fitReason: text("fit_reason").notNull().default(""), intentScore: integer("intent_score").notNull().default(0), temperature: text("temperature").notNull().default("Cold"),
   id: integer("id").primaryKey({ autoIncrement: true }), name: text("name").notNull().unique(), stage: text("stage").notNull().default("Prospect"), notes: text("notes").notNull().default(""), primaryContactId: integer("primary_contact_id").references(() => contacts.id), updatedAt: text("updated_at").notNull(),
 });
 
 export const deals = sqliteTable("deals", {
   pipelineKey: text("pipeline_key").notNull().default("default"), stageKey: text("stage_key"), closedReason: text("closed_reason").notNull().default(""), stageEnteredAt: text("stage_entered_at").notNull().default(""),
-  id: integer("id").primaryKey({ autoIncrement: true }), name: text("name").notNull(), company: text("company").notNull().default(""), contactId: integer("contact_id").references(() => contacts.id),
+  id: integer("id").primaryKey({ autoIncrement: true }), name: text("name").notNull(), company: text("company").notNull().default(""), companyId: integer("company_id").references(() => companies.id), contactId: integer("contact_id").references(() => contacts.id),
   stage: text("stage").notNull().default("Qualified"), owner: text("owner").notNull().default("Trevor"), value: integer("value").notNull().default(0), probability: integer("probability").notNull().default(25),
   nextStep: text("next_step").notNull().default(""), closeDate: text("close_date"), leadSource: text("lead_source").notNull().default("Direct"), status: text("status").notNull().default("Open"),
   campaign: text("campaign").notNull().default(""), partner: text("partner").notNull().default(""), forecastCategory: text("forecast_category").notNull().default("Pipeline"),
@@ -71,6 +71,52 @@ export const dealStageHistory = sqliteTable("deal_stage_history", {
 export const dealTasks = sqliteTable("deal_tasks", {
   id: integer("id").primaryKey({autoIncrement:true}), dealId: integer("deal_id").notNull().references(()=>deals.id), title: text("title").notNull(), owner: text("owner").notNull(), dueDate: text("due_date").notNull(), completed: integer("completed").notNull().default(0), createdAt: text("created_at").notNull(),
 },t=>[index("deal_tasks_deal_due").on(t.dealId,t.dueDate)]);
+export const dealActivities = sqliteTable("deal_activities", {
+  id: integer("id").primaryKey({autoIncrement:true}), dealId: integer("deal_id").notNull().references(()=>deals.id), companyId: integer("company_id").references(()=>companies.id), contactId: integer("contact_id").references(()=>contacts.id),
+  type: text("type").notNull(), subject: text("subject").notNull().default(""), body: text("body").notNull(), owner: text("owner").notNull(), outcome: text("outcome").notNull().default(""), happenedAt: text("happened_at").notNull(), followUpAt: text("follow_up_at"),
+  source: text("source").notNull().default("Manual"), threadKey: text("thread_key"), externalId: text("external_id"), responseExpected: integer("response_expected",{mode:"boolean"}).notNull().default(false), pinned: integer("pinned",{mode:"boolean"}).notNull().default(false), createdAt: text("created_at").notNull(), updatedAt: text("updated_at").notNull(),
+},t=>[index("deal_activities_deal_date").on(t.dealId,t.happenedAt),index("deal_activities_contact_date").on(t.contactId,t.happenedAt),index("deal_activities_thread").on(t.threadKey)]);
+export const dealRelationshipHealthScores = sqliteTable("deal_relationship_health_scores", {
+  id: integer("id").primaryKey({autoIncrement:true}), dealId: integer("deal_id").notNull().references(()=>deals.id), score: integer("score").notNull(), band: text("band").notNull(),
+  provisional: integer("provisional",{mode:"boolean"}).notNull().default(true), confidence: text("confidence").notNull(), confidenceScore: integer("confidence_score").notNull(),
+  componentsJson: text("components_json").notNull(), evidenceJson: text("evidence_json").notNull(), dataGapsJson: text("data_gaps_json").notNull(), inputHash: text("input_hash").notNull(), calculatedAt: text("calculated_at").notNull(),
+},t=>[uniqueIndex("deal_relationship_health_input").on(t.dealId,t.inputHash),index("deal_relationship_health_deal_date").on(t.dealId,t.calculatedAt)]);
+export const dealRecommendations = sqliteTable("deal_recommendations", {
+  id: text("id").primaryKey(), dealId: integer("deal_id").notNull().references(()=>deals.id), ruleKey: text("rule_key").notNull(), fingerprint: text("fingerprint").notNull(), action: text("action").notNull(), reason: text("reason").notNull(), evidenceJson: text("evidence_json").notNull(), priority: text("priority").notNull(), suggestedOwner: text("suggested_owner").notNull(), suggestedDueDate: text("suggested_due_date").notNull(), status: text("status").notNull().default("Active"), currentKey: text("current_key"), taskId: integer("task_id").references(()=>dealTasks.id), generatedAt: text("generated_at").notNull(), acceptedAt: text("accepted_at"), dismissedAt: text("dismissed_at"), completedAt: text("completed_at"), decidedBy: text("decided_by"), decisionNote: text("decision_note").notNull().default(""), updatedAt: text("updated_at").notNull(),
+},t=>[uniqueIndex("deal_recommendation_fingerprint").on(t.dealId,t.fingerprint),uniqueIndex("deal_recommendation_current").on(t.dealId,t.currentKey),index("deal_recommendations_deal_date").on(t.dealId,t.generatedAt)]);
+export const dealNotes = sqliteTable("deal_notes", {
+  id: integer("id").primaryKey({autoIncrement:true}), dealId: integer("deal_id").notNull().references(()=>deals.id), kind: text("kind").notNull().default("Note"), body: text("body").notNull(), owner: text("owner").notNull(), pinned: integer("pinned",{mode:"boolean"}).notNull().default(false), createdAt: text("created_at").notNull(), updatedAt: text("updated_at").notNull(),
+},t=>[index("deal_notes_deal_pinned").on(t.dealId,t.pinned,t.createdAt)]);
+export const dealStakeholders = sqliteTable("deal_stakeholders", {
+  id: integer("id").primaryKey({autoIncrement:true}), dealId: integer("deal_id").notNull().references(()=>deals.id), contactId: integer("contact_id").notNull().references(()=>contacts.id), role: text("role").notNull(), notes: text("notes").notNull().default(""), isPrimary: integer("is_primary",{mode:"boolean"}).notNull().default(false), active: integer("active",{mode:"boolean"}).notNull().default(true), createdAt: text("created_at").notNull(), updatedAt: text("updated_at").notNull(),
+},t=>[uniqueIndex("deal_stakeholder_unique").on(t.dealId,t.contactId),index("deal_stakeholders_contact").on(t.contactId)]);
+export const dealLineItems = sqliteTable("deal_line_items", {
+  id: integer("id").primaryKey({autoIncrement:true}), dealId: integer("deal_id").notNull().references(()=>deals.id), name: text("name").notNull(), sku: text("sku").notNull().default(""), quantity: integer("quantity").notNull().default(1), unitPrice: integer("unit_price").notNull().default(0), discountPercent: integer("discount_percent").notNull().default(0), notes: text("notes").notNull().default(""), createdAt: text("created_at").notNull(), updatedAt: text("updated_at").notNull(),
+},t=>[index("deal_line_items_deal").on(t.dealId)]);
+export const dealInsights = sqliteTable("deal_insights", {
+  id: integer("id").primaryKey({autoIncrement:true}), dealId: integer("deal_id").notNull().references(()=>deals.id), kind: text("kind").notNull(), title: text("title").notNull(), detail: text("detail").notNull().default(""), severity: text("severity").notNull().default("Medium"), status: text("status").notNull().default("Open"), owner: text("owner").notNull(), createdAt: text("created_at").notNull(), updatedAt: text("updated_at").notNull(),
+},t=>[index("deal_insights_deal_kind").on(t.dealId,t.kind)]);
+export const dealReviews = sqliteTable("deal_reviews", {
+  id: integer("id").primaryKey({autoIncrement:true}), dealId: integer("deal_id").notNull().references(()=>deals.id), reviewType: text("review_type").notNull().default("Deal review"), status: text("status").notNull().default("Requested"), approver: text("approver").notNull(), requestedBy: text("requested_by").notNull(), comments: text("comments").notNull().default(""), requestedAt: text("requested_at").notNull(), decidedAt: text("decided_at"),
+},t=>[index("deal_reviews_deal_status").on(t.dealId,t.status)]);
+export const dealProposals = sqliteTable("deal_proposals", {
+  id: integer("id").primaryKey({autoIncrement:true}), dealId: integer("deal_id").notNull().references(()=>deals.id), title: text("title").notNull(), amount: integer("amount").notNull().default(0), status: text("status").notNull().default("Draft"), validUntil: text("valid_until"), documentId: text("document_id"), createdBy: text("created_by").notNull(), createdAt: text("created_at").notNull(), updatedAt: text("updated_at").notNull(),
+},t=>[index("deal_proposals_deal").on(t.dealId)]);
+export const clientDocuments = sqliteTable("client_documents", {
+  id: text("id").primaryKey(), companyId: integer("company_id").references(()=>companies.id), contactId: integer("contact_id").references(()=>contacts.id), dealId: integer("deal_id").references(()=>deals.id), title: text("title").notNull(), category: text("category").notNull().default("Correspondence"), status: text("status").notNull().default("Active"), sensitive: integer("sensitive",{mode:"boolean"}).notNull().default(false), latestVersion: integer("latest_version").notNull().default(1), createdBy: text("created_by").notNull(), createdAt: text("created_at").notNull(), updatedAt: text("updated_at").notNull(), archivedAt: text("archived_at"),
+},t=>[index("client_documents_deal_status").on(t.dealId,t.status),index("client_documents_company_status").on(t.companyId,t.status),index("client_documents_contact_status").on(t.contactId,t.status)]);
+export const documentVersions = sqliteTable("document_versions", {
+  id: text("id").primaryKey(), documentId: text("document_id").notNull().references(()=>clientDocuments.id), version: integer("version").notNull(), objectKey: text("object_key").notNull().unique(), filename: text("filename").notNull(), contentType: text("content_type").notNull(), size: integer("size").notNull(), checksum: text("checksum").notNull(), uploadedBy: text("uploaded_by").notNull(), uploadedAt: text("uploaded_at").notNull(),
+},t=>[uniqueIndex("document_versions_document_version").on(t.documentId,t.version),index("document_versions_document").on(t.documentId)]);
+export const dealMeetings = sqliteTable("deal_meetings", {
+  id: text("id").primaryKey(), dealId: integer("deal_id").notNull().references(()=>deals.id), companyId: integer("company_id").references(()=>companies.id), activityId: integer("activity_id").references(()=>dealActivities.id),
+  subject: text("subject").notNull(), status: text("status").notNull().default("Scheduled"), startsAt: text("starts_at").notNull(), endsAt: text("ends_at"), owner: text("owner").notNull(),
+  summary: text("summary").notNull().default(""), decisionsJson: text("decisions_json").notNull().default("[]"), customerCommitmentsJson: text("customer_commitments_json").notNull().default("[]"), internalCommitmentsJson: text("internal_commitments_json").notNull().default("[]"), risksObjectionsJson: text("risks_objections_json").notNull().default("[]"), nextStepsJson: text("next_steps_json").notNull().default("[]"),
+  transcriptDocumentId: text("transcript_document_id").references(()=>clientDocuments.id), sourceProvider: text("source_provider").notNull().default("Manual"), externalId: text("external_id"), createdBy: text("created_by").notNull(), createdAt: text("created_at").notNull(), updatedAt: text("updated_at").notNull(),
+},t=>[index("deal_meetings_deal_start").on(t.dealId,t.startsAt),uniqueIndex("deal_meetings_provider_external").on(t.sourceProvider,t.externalId),index("deal_meetings_activity").on(t.activityId)]);
+export const dealMeetingAttendees = sqliteTable("deal_meeting_attendees", {
+  id: integer("id").primaryKey({autoIncrement:true}), meetingId: text("meeting_id").notNull().references(()=>dealMeetings.id), contactId: integer("contact_id").references(()=>contacts.id), name: text("name").notNull().default(""), email: text("email").notNull().default(""), role: text("role").notNull().default("Attendee"), createdAt: text("created_at").notNull(),
+},t=>[index("deal_meeting_attendees_meeting").on(t.meetingId),index("deal_meeting_attendees_contact").on(t.contactId)]);
 export const leadSources = sqliteTable("lead_sources", { id: integer("id").primaryKey({ autoIncrement: true }), name: text("name").notNull().unique(), spend: integer("spend").notNull().default(0), createdAt: text("created_at").notNull(), updatedAt: text("updated_at").notNull() });
 export const automationSequences = sqliteTable("automation_sequences", { id: integer("id").primaryKey({ autoIncrement: true }), name: text("name").notNull(), triggerType: text("trigger_type").notNull().default("Manual"), triggerValue: text("trigger_value").notNull().default(""), active: integer("active", { mode: "boolean" }).notNull().default(true), createdAt: text("created_at").notNull(), updatedAt: text("updated_at").notNull() });
 export const automationSteps = sqliteTable("automation_steps", { id: integer("id").primaryKey({ autoIncrement: true }), sequenceId: integer("sequence_id").notNull().references(() => automationSequences.id), stepOrder: integer("step_order").notNull(), delayDays: integer("delay_days").notNull().default(0), actionType: text("action_type").notNull(), subject: text("subject").notNull().default(""), body: text("body").notNull().default(""), taskTitle: text("task_title").notNull().default("") });
@@ -81,7 +127,7 @@ export const teamMembers = sqliteTable("team_members", { id: integer("id").prima
 export const auditLogs = sqliteTable("audit_logs", { id: integer("id").primaryKey({ autoIncrement: true }), actorEmail: text("actor_email").notNull(), action: text("action").notNull(), entityType: text("entity_type").notNull(), entityId: text("entity_id"), summary: text("summary").notNull(), changes: text("changes").notNull().default("{}"), createdAt: text("created_at").notNull() });
 export const integrationAccounts = sqliteTable("integration_accounts", { id: integer("id").primaryKey({ autoIncrement: true }), provider: text("provider").notNull().unique(), accountEmail: text("account_email").notNull().default(""), accessToken: text("access_token").notNull(), refreshToken: text("refresh_token").notNull(), expiresAt: text("expires_at").notNull(), scopes: text("scopes").notNull().default(""), syncEmail: integer("sync_email", {mode:"boolean"}).notNull().default(true), syncCalendar: integer("sync_calendar", {mode:"boolean"}).notNull().default(true), autoTasks: integer("auto_tasks", {mode:"boolean"}).notNull().default(true), lastSyncedAt: text("last_synced_at"), createdAt: text("created_at").notNull(), updatedAt: text("updated_at").notNull() });
 export const oauthStates = sqliteTable("oauth_states", { id: integer("id").primaryKey({ autoIncrement: true }), state: text("state").notNull().unique(), actorEmail: text("actor_email").notNull(), expiresAt: text("expires_at").notNull(), createdAt: text("created_at").notNull() });
-export const syncRecords = sqliteTable("sync_records", { id: integer("id").primaryKey({ autoIncrement: true }), provider: text("provider").notNull(), externalId: text("external_id").notNull().unique(), itemType: text("item_type").notNull(), contactId: integer("contact_id").references(() => contacts.id), occurredAt: text("occurred_at").notNull(), createdAt: text("created_at").notNull() });
+export const syncRecords = sqliteTable("sync_records", { id: integer("id").primaryKey({ autoIncrement: true }), provider: text("provider").notNull(), externalId: text("external_id").notNull().unique(), itemType: text("item_type").notNull(), contactId: integer("contact_id").references(() => contacts.id), dealId: integer("deal_id").references(()=>deals.id), threadKey: text("thread_key"), occurredAt: text("occurred_at").notNull(), createdAt: text("created_at").notNull() });
 export const brandSettings = sqliteTable("brand_settings", {
   id: integer("id").primaryKey(),
   businessName: text("business_name").notNull().default(""),
@@ -122,6 +168,54 @@ export const importChanges = sqliteTable("import_changes", {
 export const apiKeys = sqliteTable("api_keys", {
   id: text("id").primaryKey(), name: text("name").notNull(), keyHash: text("key_hash").notNull().unique(), keyPrefix: text("key_prefix").notNull(), scopes: text("scopes").notNull(), lastUsedAt: text("last_used_at"), expiresAt: text("expires_at"), revokedAt: text("revoked_at"), createdBy: text("created_by").notNull(), createdAt: text("created_at").notNull(),
 });
+
+export const aiSettings = sqliteTable("ai_settings", {
+  id: integer("id").primaryKey(),
+  provider: text("provider").notNull().default("openai"),
+  model: text("model").notNull().default("gpt-5-mini"),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(false),
+  dailyRunLimit: integer("daily_run_limit").notNull().default(100),
+  perUserDailyLimit: integer("per_user_daily_limit").notNull().default(25),
+  maxContextChars: integer("max_context_chars").notNull().default(60000),
+  resultRetentionDays: integer("result_retention_days").notNull().default(730),
+  requireReview: integer("require_review", { mode: "boolean" }).notNull().default(true),
+  allowSensitiveSources: integer("allow_sensitive_sources", { mode: "boolean" }).notNull().default(false),
+  updatedBy: text("updated_by").notNull().default(""),
+  updatedAt: text("updated_at").notNull(),
+});
+export const aiPromptVersions = sqliteTable("ai_prompt_versions", {
+  id: text("id").primaryKey(), feature: text("feature").notNull(), version: integer("version").notNull(), name: text("name").notNull(),
+  systemPrompt: text("system_prompt").notNull(), responseSchema: text("response_schema").notNull().default("{}"), status: text("status").notNull().default("Draft"),
+  createdBy: text("created_by").notNull(), createdAt: text("created_at").notNull(), activatedBy: text("activated_by"), activatedAt: text("activated_at"),
+}, t => [uniqueIndex("ai_prompt_feature_version").on(t.feature,t.version),index("ai_prompt_feature_status").on(t.feature,t.status)]);
+export const aiRuns = sqliteTable("ai_runs", {
+  id: text("id").primaryKey(), feature: text("feature").notNull(), entityType: text("entity_type").notNull(), entityId: text("entity_id"), status: text("status").notNull(),
+  provider: text("provider").notNull(), model: text("model").notNull(), promptVersion: integer("prompt_version"), inputHash: text("input_hash").notNull(), requestedBy: text("requested_by").notNull(),
+  sourceCount: integer("source_count").notNull().default(0), inputChars: integer("input_chars").notNull().default(0), outputChars: integer("output_chars").notNull().default(0),
+  latencyMs: integer("latency_ms").notNull().default(0), estimatedTokens: integer("estimated_tokens").notNull().default(0), error: text("error").notNull().default(""),
+  startedAt: text("started_at").notNull(), completedAt: text("completed_at"),
+}, t => [index("ai_runs_user_date").on(t.requestedBy,t.startedAt),index("ai_runs_feature_date").on(t.feature,t.startedAt),index("ai_runs_status_date").on(t.status,t.startedAt)]);
+export const aiArtifacts = sqliteTable("ai_artifacts", {
+  id: text("id").primaryKey(), runId: text("run_id").references(()=>aiRuns.id), feature: text("feature").notNull(), entityType: text("entity_type").notNull(), entityId: text("entity_id"),
+  reviewStatus: text("review_status").notNull().default("Draft"), contentJson: text("content_json").notNull(), originalContentJson: text("original_content_json").notNull(),
+  explanation: text("explanation").notNull().default(""), confidence: integer("confidence").notNull().default(0), provider: text("provider").notNull(), model: text("model").notNull(),
+  promptVersion: integer("prompt_version"), rulesVersion: text("rules_version").notNull().default(""), inputHash: text("input_hash").notNull(), generatedBy: text("generated_by").notNull(),
+  generatedAt: text("generated_at").notNull(), reviewedBy: text("reviewed_by"), reviewedAt: text("reviewed_at"), supersededBy: text("superseded_by"),
+}, t => [index("ai_artifacts_entity_date").on(t.entityType,t.entityId,t.generatedAt),index("ai_artifacts_status_date").on(t.reviewStatus,t.generatedAt)]);
+export const aiArtifactSources = sqliteTable("ai_artifact_sources", {
+  id: integer("id").primaryKey({autoIncrement:true}), artifactId: text("artifact_id").notNull().references(()=>aiArtifacts.id), sourceType: text("source_type").notNull(), sourceId: text("source_id").notNull(),
+  sourceUpdatedAt: text("source_updated_at"), contentHash: text("content_hash").notNull(), excerpt: text("excerpt").notNull().default(""),
+}, t => [uniqueIndex("ai_artifact_source_unique").on(t.artifactId,t.sourceType,t.sourceId),index("ai_artifact_sources_artifact").on(t.artifactId)]);
+export const aiFeedbackEvents = sqliteTable("ai_feedback_events", {
+  id: integer("id").primaryKey({autoIncrement:true}), artifactId: text("artifact_id").notNull().references(()=>aiArtifacts.id), action: text("action").notNull(),
+  beforeJson: text("before_json").notNull().default("{}"), afterJson: text("after_json").notNull().default("{}"), comment: text("comment").notNull().default(""), actor: text("actor").notNull(), createdAt: text("created_at").notNull(),
+}, t => [index("ai_feedback_artifact_date").on(t.artifactId,t.createdAt)]);
+export const aiRecordFields = sqliteTable("ai_record_fields", {
+  id: text("id").primaryKey(), entityType: text("entity_type").notNull(), entityId: text("entity_id").notNull(), fieldKey: text("field_key").notNull(),
+  valueJson: text("value_json").notNull(), explanation: text("explanation").notNull().default(""), confidence: integer("confidence").notNull().default(0), citationsJson: text("citations_json").notNull().default("[]"),
+  sourceArtifactId: text("source_artifact_id").references(()=>aiArtifacts.id,{onDelete:"set null"}), manualOverride: integer("manual_override",{mode:"boolean"}).notNull().default(false), locked: integer("locked",{mode:"boolean"}).notNull().default(false),
+  updatedBy: text("updated_by").notNull(), updatedAt: text("updated_at").notNull(),
+}, t => [uniqueIndex("ai_record_field_unique").on(t.entityType,t.entityId,t.fieldKey),index("ai_record_fields_entity").on(t.entityType,t.entityId),index("ai_record_fields_artifact").on(t.sourceArtifactId)]);
 export const webhookEndpoints = sqliteTable("webhook_endpoints", {
   id: text("id").primaryKey(), name: text("name").notNull(), url: text("url").notNull(), events: text("events").notNull(), secretEncrypted: text("secret_encrypted").notNull(), active: integer("active",{mode:"boolean"}).notNull().default(true), lastStatus: integer("last_status"), lastTriggeredAt: text("last_triggered_at"), createdAt: text("created_at").notNull(),
 });

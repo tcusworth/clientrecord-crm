@@ -1,4 +1,6 @@
-export type Stage = { key:string; name:string; probability:number; kind:"Open"|"Won"|"Lost" };
+export const dealRequiredFieldOptions = ["company","contact","value","closeDate","nextStep","products","decisionCriteria","approval"] as const;
+export type DealRequiredField = typeof dealRequiredFieldOptions[number];
+export type Stage = { key:string; name:string; probability:number; kind:"Open"|"Won"|"Lost"; requiredFields?:DealRequiredField[] };
 export type Pipeline = { id:string; name:string; stages:Stage[] };
 export const defaultPipeline:Pipeline = {id:"default",name:"New business",stages:[
   {key:"Qualified",name:"Qualified",probability:25,kind:"Open"},
@@ -9,11 +11,11 @@ export const defaultPipeline:Pipeline = {id:"default",name:"New business",stages
   {key:"Lost",name:"Lost",probability:0,kind:"Lost"},
 ]};
 export const signalPoints:Record<string,number> = {"Strategic initiative":20,"Engaged conversation":20,"Budget confirmed":30,"Demo request":40,"RFP / buying process":60,"Project paused":-40,"General news":0};
-export const relationshipRoles = ["Decision-maker","Champion","Blocker","Influencer","Colleague"];
+export const relationshipRoles = ["Decision-maker","Economic buyer","Technical buyer","Champion","Blocker","Influencer","Legal/procurement","User","Other"];
 export function qualification(fit:number,intent:number) {return intent>=60&&fit>=50?"Hot":intent>=20?"Lukewarm":"Cold";}
 export function validateStages(value:unknown):Stage[] {
   if(!Array.isArray(value)||value.length<3||value.length>16)throw new Error("Use 3–16 stages, including open, won and lost outcomes.");
-  const rows=value.map(v=>({key:String(v.key||"").trim(),name:String(v.name||"").trim(),probability:Number(v.probability),kind:v.kind})) as Stage[];
+  const rows=value.map(v=>({key:String(v.key||"").trim(),name:String(v.name||"").trim(),probability:Number(v.probability),kind:v.kind,requiredFields:Array.isArray(v.requiredFields)?v.requiredFields.filter((field:unknown)=>dealRequiredFieldOptions.includes(String(field) as DealRequiredField)):[]})) as Stage[];
   if(rows.some(v=>!v.key||!v.name||v.name.length>60||!["Open","Won","Lost"].includes(v.kind)||!Number.isFinite(v.probability)||v.probability<0||v.probability>100))throw new Error("Every stage needs a name, stable key, valid outcome and probability from 0 to 100.");
   if(new Set(rows.map(v=>v.key)).size!==rows.length||new Set(rows.map(v=>v.name.toLowerCase())).size!==rows.length)throw new Error("Stage keys and names must be unique.");
   if(!["Open","Won","Lost"].every(k=>rows.some(v=>v.kind===k)))throw new Error("Include open, won and lost stages.");

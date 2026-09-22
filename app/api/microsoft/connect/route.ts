@@ -3,7 +3,7 @@ import { can, crmUser } from "@/lib/crm-auth";
 import { authorizeUrl, microsoftConfigured } from "@/lib/microsoft";
 
 export async function GET(request: Request) {
-  const user = await crmUser(request); if (!user) return Response.redirect(new URL("/signin-with-chatgpt?return_to=%2F", request.url));
+  const user = await crmUser(request); if (!user) return Response.redirect(new URL("/?integration=sign_in_required", request.url));
   if (!can(user,"integrations.manage")) return Response.json({ error: "Integration permission is required." }, { status: 403 });
   if (!microsoftConfigured()) return Response.json({ error: "Microsoft 365 credentials have not been configured yet." }, { status: 503 });
   const state = crypto.randomUUID(); await env.DB.prepare("DELETE FROM oauth_states WHERE expires_at<datetime('now')").run();

@@ -75,8 +75,8 @@ export async function runStagnationAlerts() {
   return created;
 }
 
-const exportTables=["contacts","companies","account_stakeholders","account_signals","qualification_alerts","activities","tasks","campaigns","campaign_events","segments","suppressions","consent_events","sales_pipelines","deals","deal_stage_history","deal_tasks","lead_sources","automation_sequences","automation_steps","automation_enrollments","custom_field_definitions","custom_field_values","team_members","audit_logs","sync_records","brand_settings","operation_settings"] as const;
-const restoreInsertOrder=["contacts","companies","account_stakeholders","account_signals","qualification_alerts","activities","tasks","campaigns","campaign_events","segments","suppressions","consent_events","sales_pipelines","deals","deal_stage_history","deal_tasks","lead_sources","automation_sequences","automation_steps","automation_enrollments","custom_field_definitions","custom_field_values","team_members","audit_logs","sync_records","brand_settings","operation_settings"];
+const exportTables=["contacts","companies","sales_pipelines","deals","account_stakeholders","account_signals","qualification_alerts","activities","tasks","deal_stage_history","deal_tasks","deal_activities","deal_relationship_health_scores","deal_recommendations","deal_notes","deal_stakeholders","deal_line_items","deal_insights","deal_reviews","client_documents","document_versions","deal_meetings","deal_meeting_attendees","deal_proposals","campaigns","campaign_events","segments","suppressions","consent_events","lead_sources","automation_sequences","automation_steps","automation_enrollments","custom_field_definitions","custom_field_values","team_members","audit_logs","sync_records","brand_settings","operation_settings","ai_settings","ai_prompt_versions","ai_runs","ai_artifacts","ai_artifact_sources","ai_feedback_events","ai_record_fields"] as const;
+const restoreInsertOrder=["contacts","companies","sales_pipelines","deals","account_stakeholders","account_signals","qualification_alerts","activities","tasks","deal_stage_history","deal_tasks","deal_activities","deal_relationship_health_scores","deal_recommendations","deal_notes","deal_stakeholders","deal_line_items","deal_insights","deal_reviews","client_documents","document_versions","deal_meetings","deal_meeting_attendees","deal_proposals","campaigns","campaign_events","segments","suppressions","consent_events","lead_sources","automation_sequences","automation_steps","automation_enrollments","custom_field_definitions","custom_field_values","team_members","audit_logs","sync_records","brand_settings","operation_settings","ai_settings","ai_prompt_versions","ai_runs","ai_artifacts","ai_artifact_sources","ai_feedback_events","ai_record_fields"];
 const restoreDeleteOrder=[...restoreInsertOrder].reverse();
 
 async function checksum(value:string){const digest=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(value));return Array.from(new Uint8Array(digest)).map(b=>b.toString(16).padStart(2,"0")).join("");}
@@ -104,12 +104,17 @@ export async function restoreBackup(id:string, actor:string) {
 
 export async function applyRetention() {
   const s=await env.DB.prepare("SELECT * FROM operation_settings WHERE id=1").first<Row>(); const days=(key:string,fallback:number)=>Math.max(1,Number(s?.[key]||fallback));
+  const ai=await env.DB.prepare("SELECT result_retention_days AS days FROM ai_settings WHERE id=1").first<{days:number}>(),aiRetention=Math.max(30,Number(ai?.days||730)),aiCutoff=`-${aiRetention} days`;
   const results=await env.DB.batch([
     env.DB.prepare("DELETE FROM audit_logs WHERE created_at<datetime('now',?)").bind(`-${days("audit_retention_days",730)} days`),
     env.DB.prepare("DELETE FROM system_events WHERE created_at<datetime('now',?)").bind(`-${days("event_retention_days",90)} days`),
     env.DB.prepare("DELETE FROM delivery_logs WHERE created_at<datetime('now',?)").bind(`-${days("delivery_retention_days",180)} days`),
     env.DB.prepare("DELETE FROM sync_records WHERE created_at<datetime('now',?)").bind(`-${days("sync_retention_days",365)} days`),
     env.DB.prepare("DELETE FROM webhook_deliveries WHERE created_at<datetime('now',?)").bind(`-${days("delivery_retention_days",180)} days`),
+    env.DB.prepare("DELETE FROM ai_feedback_events WHERE artifact_id IN (SELECT id FROM ai_artifacts WHERE generated_at<datetime('now',?))").bind(aiCutoff),
+    env.DB.prepare("DELETE FROM ai_artifact_sources WHERE artifact_id IN (SELECT id FROM ai_artifacts WHERE generated_at<datetime('now',?))").bind(aiCutoff),
+    env.DB.prepare("DELETE FROM ai_artifacts WHERE generated_at<datetime('now',?)").bind(aiCutoff),
+    env.DB.prepare("DELETE FROM ai_runs WHERE started_at<datetime('now',?)").bind(aiCutoff),
   ]); return results.reduce((sum,r)=>sum+Number(r.meta.changes||0),0);
 }
 

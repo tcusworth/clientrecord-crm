@@ -1,0 +1,1 @@
+ALTER TABLE `deal_stakeholders` ADD `active` integer DEFAULT true NOT NULL;

@@ -7,10 +7,14 @@ declare namespace Cloudflare {
     RESEND_WEBHOOK_SECRET?: string;
     CRM_ALLOWED_EMAILS?: string;
     CRM_TOKEN_ENCRYPTION_KEY?: string;
+    CF_ACCESS_TEAM_DOMAIN?: string;
+    CF_ACCESS_AUD?: string;
+    CF_ACCESS_ENFORCED?: string;
     MS_CLIENT_ID?: string;
     MS_CLIENT_SECRET?: string;
     MS_TENANT_ID?: string;
     GOOGLE_CLIENT_ID?: string;
     GOOGLE_CLIENT_SECRET?: string;
+    OPENAI_API_KEY?: string;
   }
 }

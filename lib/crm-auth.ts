@@ -1,15 +1,16 @@
 import { env } from "cloudflare:workers";
 import { emitWebhook } from "@/lib/webhooks";
+import { verifiedCloudflareAccessIdentity } from "@/lib/cloudflare-access";
 
 export type CRMRole = "owner" | "admin" | "editor" | "viewer";
-export type CRMPermission = "records.view" | "records.edit" | "records.delete" | "records.export" | "campaigns.send" | "integrations.manage" | "settings.manage" | "audit.view" | "backups.manage" | "webhooks.manage" | "jobs.run";
+export type CRMPermission = "records.view" | "records.edit" | "records.delete" | "records.export" | "documents.view" | "documents.upload" | "documents.manage_sensitive" | "campaigns.send" | "integrations.manage" | "settings.manage" | "audit.view" | "backups.manage" | "webhooks.manage" | "jobs.run" | "ai.view" | "ai.generate" | "ai.review" | "ai.configure";
 export type CRMUser = { id: string; email: string; role: CRMRole; permissions: CRMPermission[] };
 
 const rolePermissions: Record<CRMRole, CRMPermission[]> = {
-  owner: ["records.view","records.edit","records.delete","records.export","campaigns.send","integrations.manage","settings.manage","audit.view","backups.manage","webhooks.manage","jobs.run"],
-  admin: ["records.view","records.edit","records.delete","records.export","campaigns.send","integrations.manage","settings.manage","audit.view","backups.manage","webhooks.manage","jobs.run"],
-  editor: ["records.view","records.edit","campaigns.send"],
-  viewer: ["records.view"],
+  owner: ["records.view","records.edit","records.delete","records.export","documents.view","documents.upload","documents.manage_sensitive","campaigns.send","integrations.manage","settings.manage","audit.view","backups.manage","webhooks.manage","jobs.run","ai.view","ai.generate","ai.review","ai.configure"],
+  admin: ["records.view","records.edit","records.delete","records.export","documents.view","documents.upload","documents.manage_sensitive","campaigns.send","integrations.manage","settings.manage","audit.view","backups.manage","webhooks.manage","jobs.run","ai.view","ai.generate","ai.review","ai.configure"],
+  editor: ["records.view","records.edit","documents.view","documents.upload","campaigns.send","ai.view","ai.generate","ai.review"],
+  viewer: ["records.view","documents.view","ai.view"],
 };
 
 function parsePermissions(value: unknown, role: CRMRole) {
@@ -19,8 +20,17 @@ function parsePermissions(value: unknown, role: CRMRole) {
 
 export async function crmUser(request: Request): Promise<CRMUser | null> {
   const hostname=new URL(request.url).hostname;if(hostname==="terminal.local"||hostname==="127.0.0.1"||hostname==="localhost")return {id:"local-preview",email:"tcusworth@gmail.com",role:"owner",permissions:rolePermissions.owner};
-  const id = request.headers.get("oai-authenticated-user-id");
-  const email = request.headers.get("oai-authenticated-user-email")?.toLowerCase();
+  const accessIdentity = await verifiedCloudflareAccessIdentity(request, env.CF_ACCESS_TEAM_DOMAIN, env.CF_ACCESS_AUD);
+  let id = accessIdentity?.id;
+  let email = accessIdentity?.email;
+
+  // Keep the previous Sites identity only during the staged Access rollout. Once
+  // CF_ACCESS_ENFORCED=true, direct requests to the generated origin are rejected.
+  if (!id || !email) {
+    if (String(env.CF_ACCESS_ENFORCED || "").toLowerCase() === "true") return null;
+    id = request.headers.get("oai-authenticated-user-id") || undefined;
+    email = request.headers.get("oai-authenticated-user-email")?.trim().toLowerCase();
+  }
   if (!id || !email) return null;
   const owners = String(env.CRM_ALLOWED_EMAILS || "tcusworth@gmail.com").toLowerCase().split(",").map(v => v.trim()).filter(Boolean);
   if (owners.includes(email)) return { id, email, role: "owner", permissions: rolePermissions.owner };
