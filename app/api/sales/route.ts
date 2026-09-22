@@ -17,6 +17,22 @@ function auditStatement(email:string,action:string,id:string,before:unknown,afte
   return db().prepare("INSERT INTO audit_logs(actor_email,action,entity_type,entity_id,summary,changes,created_at) VALUES (?,?,?,?,?,?,?)")
     .bind(email,action,"sales",id,action,JSON.stringify({before,after}),new Date().toISOString());
 }
+async function customFieldValues(body:Row,entityType:"company"){
+  const definitions=await rows("SELECT id,field_type AS fieldType,options FROM custom_field_definitions WHERE entity_type=?",entityType);
+  const values:Array<{id:number;value:string}>=[];
+  for(const definition of definitions){
+    const id=Number(definition.id),key=`customField_${id}`;
+    if(!Object.hasOwn(body,key))continue;
+    const value=str(body[key]),fieldType=String(definition.fieldType);
+    if(value.length>4000)throw new Error("Custom field values are limited to 4,000 characters.");
+    if(value&&fieldType==="number"&&!Number.isFinite(Number(value)))throw new Error("Enter a valid number in each number field.");
+    if(value&&fieldType==="date"&&!/^\d{4}-\d{2}-\d{2}$/.test(value))throw new Error("Enter a valid date in each date field.");
+    if(value&&fieldType==="boolean"&&!['true','false'].includes(value))throw new Error("Choose Yes or No for each yes/no field.");
+    if(value&&fieldType==="select"&&!(JSON.parse(String(definition.options||"[]")) as string[]).includes(value))throw new Error("Choose a configured option for each select field.");
+    values.push({id,value});
+  }
+  return values;
+}
 // Each recalculation runs in the same transaction as its source edit.
 function recalculate(id:number|string,actor:string){
   const selector=typeof id==="number"?"id=?":"name=?";
@@ -41,7 +57,7 @@ export async function GET(request:Request){
         ORDER BY date DESC LIMIT 150`,accountId,accountId,accountId,accountId,accountId,accountId,accountId,accountId);
       return Response.json({timeline});
     }
-    const [companies,contacts,stakeholders,deals,tasks,history,signals,alerts,pipe]=await Promise.all([
+    const [companies,contacts,stakeholders,deals,tasks,history,signals,alerts,pipe,customFields,customValues]=await Promise.all([
       rows("SELECT * FROM companies ORDER BY name"),
       rows("SELECT id,first_name||' '||last_name AS name,email,company,title FROM contacts ORDER BY first_name,last_name"),
       rows("SELECT * FROM account_stakeholders"),
@@ -51,8 +67,10 @@ export async function GET(request:Request){
       rows("SELECT * FROM account_signals ORDER BY occurred_at DESC"),
       canAdmin(user.role)?rows("SELECT * FROM qualification_alerts ORDER BY created_at DESC LIMIT 100"):rows("SELECT * FROM qualification_alerts WHERE owner=? ORDER BY created_at DESC LIMIT 100",user.email),
       pipelines(),
+      rows("SELECT id,entity_type AS entityType,name,field_key AS fieldKey,field_type AS fieldType,options FROM custom_field_definitions WHERE entity_type='company' ORDER BY name"),
+      rows("SELECT definition_id AS definitionId,entity_type AS entityType,entity_id AS entityId,value FROM custom_field_values WHERE entity_type='company'"),
     ]);
-    return Response.json({user,companies,contacts,stakeholders,deals:deals.map(d=>({...d,status:!d.stage_key&&["Won","Lost"].includes(String(d.stage))?d.stage:d.status})),tasks,history,signals,alerts,pipelines:pipe,signalPoints,relationshipRoles});
+    return Response.json({user,companies,contacts,stakeholders,deals:deals.map(d=>({...d,status:!d.stage_key&&["Won","Lost"].includes(String(d.stage))?d.stage:d.status})),tasks,history,signals,alerts,pipelines:pipe,customFields:customFields.map(field=>({...field,options:JSON.parse(String(field.options||"[]"))})),customFieldValues:customValues,signalPoints,relationshipRoles});
   }catch(error){console.error(error);return Response.json({error:"Sales foundation could not load."},{status:503});}
 }
 export async function POST(request:Request){
@@ -66,6 +84,7 @@ export async function POST(request:Request){
       if(str(b.website)&&!/^https?:\/\//i.test(str(b.website)))throw new Error("Website must start with https:// or http://.");
       if(fit>0&&!str(b.fit_reason))throw new Error("Explain the fit score so qualification remains transparent.");
       const before=await db().prepare("SELECT * FROM companies WHERE name=?").bind(name).first<Row>();
+      const fieldValues=await customFieldValues(b,"company");
       const tags=JSON.stringify(str(b.tags).split(",").map(s=>s.trim()).filter(Boolean).slice(0,30));
       const result=await db().batch([
         db().prepare("INSERT INTO companies(name,stage,notes,updated_at,website,domain,industry,tier,territory,owner,tags,fit_score,fit_reason) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(name) DO UPDATE SET stage=excluded.stage,notes=excluded.notes,updated_at=excluded.updated_at,website=excluded.website,domain=excluded.domain,industry=excluded.industry,tier=excluded.tier,territory=excluded.territory,owner=excluded.owner,tags=excluded.tags,fit_score=excluded.fit_score,fit_reason=excluded.fit_reason")
@@ -74,6 +93,13 @@ export async function POST(request:Request){
         ...recalculate(name,user.email),auditStatement(user.email,action,name,before,b),
       ]);
       const id=before?Number(before.id):Number(result[0].meta.last_row_id);
+      if(fieldValues.length){
+        const changes=fieldValues.flatMap(field=>[
+          db().prepare("DELETE FROM custom_field_values WHERE definition_id=? AND entity_type='company' AND entity_id=?").bind(field.id,id),
+          ...(field.value?[db().prepare("INSERT INTO custom_field_values(definition_id,entity_type,entity_id,value,updated_at) VALUES (?,'company',?,?,?)").bind(field.id,id,field.value,now)]:[]),
+        ]);
+        await db().batch(changes);
+      }
       return Response.json({id});
     }
     if(action==="saveStakeholder"){
