@@ -18,6 +18,12 @@ export const aiFeatures = [
   { key:"proposal-draft", name:"AI proposal draft", mode:"Generative", phase:8, description:"Editable, source-backed commercial proposal for a deal." },
   { key:"deal-review", name:"AI deal-review copilot", mode:"Hybrid", phase:9, description:"Weekly deal movement, evidence, qualification gaps, close-date credibility, and actions." },
   { key:"forecast-explanation", name:"AI forecast explanation", mode:"Hybrid", phase:9, description:"Evidence-backed explanation of forecast movement, commit coverage, and close-date risk." },
+  { key:"conversation-intelligence", name:"Conversation intelligence", mode:"Hybrid", phase:10, description:"Classifies linked email and meeting evidence for commitments, objections, competitors, pricing, and buying signals." },
+  { key:"crm-hygiene", name:"CRM hygiene agent", mode:"Deterministic", phase:10, description:"Proposes duplicate, completeness, ownership, and date fixes for review." },
+  { key:"account-plan", name:"Account-plan generator", mode:"Hybrid", phase:10, description:"Builds a living account brief from relationships, signals, documents, deals, risks, and objectives." },
+  { key:"negotiation-intelligence", name:"Proposal and negotiation intelligence", mode:"Hybrid", phase:10, description:"Compares proposal history, concessions, commercial risks, and contract-related evidence." },
+  { key:"crm-analysis", name:"Natural-language CRM analysis", mode:"Deterministic", phase:10, description:"Safely turns plain-language questions into live, evidence-backed CRM record lists." },
+  { key:"recommendation-learning", name:"Recommendation learning loop", mode:"Deterministic", phase:10, description:"Shows accepted, dismissed, and completed recommendation outcomes without silently changing prioritization." },
 ] as const;
 
 export const defaultAiSettings = {
