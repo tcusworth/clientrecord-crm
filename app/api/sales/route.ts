@@ -81,9 +81,9 @@ export async function GET(request:Request){
 }
 export async function POST(request:Request){
   const user=await crmUser(request);if(!user)return Response.json({error:"Sign in is required."},{status:401});
-  if(!can(user,"records.edit"))return Response.json({error:"Record-edit permission is required."},{status:403});
   try{
     const b=await request.json() as Row,action=str(b.action),now=new Date().toISOString();
+    if(!can(user,action==="deleteCompany"?"records.delete":"records.edit"))return Response.json({error:action==="deleteCompany"?"Record-delete permission is required.":"Record-edit permission is required."},{status:403});
     if(action==="previewCompanyEnrichment"){
       const id=number(b.company_id,1,1e12),company=await db().prepare("SELECT id,name,website,domain FROM companies WHERE id=?").bind(id).first<Row>();
       if(!company)throw new Error("Company not found.");
@@ -111,6 +111,24 @@ export async function POST(request:Request){
       const source=str(b.source).slice(0,1000),confidence=number(b.confidence,0,100),setSql=updates.map(item=>`${item.column}=?`).join(",");
       const mutation=db().prepare(`UPDATE companies SET ${setSql},enrichment_source=?,enrichment_confidence=?,enriched_at=?,updated_at=? WHERE id=?`).bind(...updates.map(item=>item.value),source,confidence,now,now,id);
       await db().batch([mutation,auditStatement(user.email,action,String(id),before,{fields:Object.fromEntries(updates.map(item=>[item.column,item.value])),source,confidence})]);
+      return Response.json({ok:true});
+    }else if(action==="deleteCompany"){
+      const id=number(b.company_id,1,1e12),before=await db().prepare("SELECT * FROM companies WHERE id=?").bind(id).first<Row>();
+      if(!before)throw new Error("Company not found.");
+      await db().batch([
+        db().prepare("UPDATE contacts SET company='',updated_at=datetime('now') WHERE lower(trim(company))=lower(trim(?))").bind(String(before.name)),
+        db().prepare("UPDATE deals SET company='',company_id=NULL,updated_at=? WHERE company_id=?").bind(now,id),
+        db().prepare("UPDATE deal_activities SET company_id=NULL,updated_at=? WHERE company_id=?").bind(now,id),
+        db().prepare("UPDATE deal_meetings SET company_id=NULL,updated_at=? WHERE company_id=?").bind(now,id),
+        db().prepare("UPDATE client_documents SET company_id=NULL,updated_at=? WHERE company_id=?").bind(now,id),
+        db().prepare("DELETE FROM account_stakeholders WHERE company_id=?").bind(id),
+        db().prepare("DELETE FROM account_signals WHERE company_id=?").bind(id),
+        db().prepare("DELETE FROM qualification_alerts WHERE company_id=?").bind(id),
+        db().prepare("DELETE FROM custom_field_values WHERE entity_type='company' AND entity_id=?").bind(id),
+        db().prepare("DELETE FROM ai_record_fields WHERE entity_type='company' AND entity_id=?").bind(id),
+        db().prepare("DELETE FROM companies WHERE id=?").bind(id),
+        auditStatement(user.email,action,String(id),before,{retained:"Contacts, deals, documents and historical activity were unlinked."}),
+      ]);
       return Response.json({ok:true});
     }else if(action==="saveAccount"){
       const name=requireText(b.name,"Company name"),owner=requireText(b.owner,"Owner email").toLowerCase(),fit=number(b.fit_score);

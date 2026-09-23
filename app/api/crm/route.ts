@@ -86,8 +86,9 @@ async function syncCampaign(id: number) {
 export async function GET(request:Request) { const account=await crmUser(request);if(!account)return Response.json({error:"Sign in is required."},{status:401});try { await maybeRunDailyMaintenance(account.email);return Response.json(await readAll(account)); } catch { return Response.json({ error: "CRM data is temporarily unavailable." }, { status:503 }); } }
 export async function POST(request: Request) {
   try {
-    const account=await crmUser(request);if(!account)return Response.json({error:"Sign in is required."},{status:401});if(!can(account,"records.edit"))return Response.json({error:"Record-edit permission is required."},{status:403});
+    const account=await crmUser(request);if(!account)return Response.json({error:"Sign in is required."},{status:401});
     const body = await request.json() as Record<string, unknown>;
+    if(!can(account,body.action==="deleteContact"?"records.delete":"records.edit"))return Response.json({error:body.action==="deleteContact"?"Record-delete permission is required.":"Record-edit permission is required."},{status:403});
     await audit(account,String(body.action||"write"),"crm",body.id||body.contactId||body.email||null,`CRM action: ${String(body.action||"write")}`,body);
     if (body.action === "createContact") {
       const firstName=clean(body.firstName), lastName=clean(body.lastName), email=clean(body.email).toLowerCase(); if (!firstName || !lastName || !email) return Response.json({error:"Name and email are required."},{status:400});
@@ -101,6 +102,27 @@ export async function POST(request: Request) {
       await env.DB.batch([env.DB.prepare("UPDATE contacts SET first_name=?,last_name=?,email=?,company=?,title=?,phone=?,location=?,notes=?,lead_source=?,stage=?,tags=?,updated_at=datetime('now') WHERE id=?").bind(clean(body.firstName),clean(body.lastName),email,clean(body.company),clean(body.title),clean(body.phone),clean(body.location),clean(body.notes),clean(body.leadSource,"Direct"),stage,JSON.stringify(tags),id),...fieldChanges]);
       const matched=await env.DB.prepare("SELECT s.id,(SELECT delay_days FROM automation_steps WHERE sequence_id=s.id ORDER BY step_order LIMIT 1) AS delayDays FROM automation_sequences s WHERE s.active=1 AND s.trigger_type='Contact stage' AND lower(s.trigger_value)=lower(?)").bind(stage).all();for(const sequence of matched.results){const exists=await env.DB.prepare("SELECT id FROM automation_enrollments WHERE sequence_id=? AND contact_id=? AND status='Active'").bind(sequence.id,id).first();if(!exists)await env.DB.prepare("INSERT INTO automation_enrollments (sequence_id,contact_id,current_step,status,next_run_at,enrolled_at) VALUES (?,?,0,'Active',datetime('now',?),datetime('now'))").bind(sequence.id,id,`+${Math.max(0,Number(sequence.delayDays)||0)} days`).run();}
       return Response.json({status:"updated"});
+    }
+    if(body.action==="deleteContact"){
+      const id=Number(body.id),contact=await env.DB.prepare("SELECT * FROM contacts WHERE id=?").bind(id).first<Record<string,unknown>>();
+      if(!id||!contact)return Response.json({error:"Contact not found."},{status:404});
+      await env.DB.batch([
+        env.DB.prepare("DELETE FROM activities WHERE contact_id=?").bind(id),
+        env.DB.prepare("DELETE FROM tasks WHERE contact_id=?").bind(id),
+        env.DB.prepare("DELETE FROM automation_enrollments WHERE contact_id=?").bind(id),
+        env.DB.prepare("UPDATE sync_records SET contact_id=NULL WHERE contact_id=?").bind(id),
+        env.DB.prepare("UPDATE companies SET primary_contact_id=NULL WHERE primary_contact_id=?").bind(id),
+        env.DB.prepare("UPDATE deals SET contact_id=NULL WHERE contact_id=?").bind(id),
+        env.DB.prepare("UPDATE deal_activities SET contact_id=NULL,updated_at=datetime('now') WHERE contact_id=?").bind(id),
+        env.DB.prepare("UPDATE deal_meeting_attendees SET contact_id=NULL WHERE contact_id=?").bind(id),
+        env.DB.prepare("UPDATE client_documents SET contact_id=NULL,updated_at=datetime('now') WHERE contact_id=?").bind(id),
+        env.DB.prepare("DELETE FROM deal_stakeholders WHERE contact_id=?").bind(id),
+        env.DB.prepare("DELETE FROM account_stakeholders WHERE contact_id=?").bind(id),
+        env.DB.prepare("DELETE FROM custom_field_values WHERE entity_type='contact' AND entity_id=?").bind(id),
+        env.DB.prepare("DELETE FROM ai_record_fields WHERE entity_type='contact' AND entity_id=?").bind(id),
+        env.DB.prepare("DELETE FROM contacts WHERE id=?").bind(id),
+      ]);
+      return Response.json({status:"deleted"});
     }
     if (body.action === "createActivity") {
       const contactId=Number(body.contactId), note=clean(body.note), type=clean(body.type,"Note"), today=new Date().toISOString(); if (!contactId || !note) return Response.json({error:"Contact and note are required."},{status:400});
