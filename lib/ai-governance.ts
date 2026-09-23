@@ -15,6 +15,7 @@ export const aiFeatures = [
   { key:"buying-stage", name:"Buying stage", mode:"Hybrid", phase:7, description:"Buying-stage classification separate from pipeline stage." },
   { key:"meddpicc", name:"MEDDPICC completeness", mode:"Hybrid", phase:7, description:"Qualification coverage with missing evidence." },
   { key:"deal-risk", name:"Deal-risk summary", mode:"Hybrid", phase:7, description:"Source-backed risk factors and mitigation summary." },
+  { key:"proposal-draft", name:"AI proposal draft", mode:"Generative", phase:8, description:"Editable, source-backed commercial proposal for a deal." },
 ] as const;
 
 export const defaultAiSettings = {
