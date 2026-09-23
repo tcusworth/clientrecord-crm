@@ -1,0 +1,4 @@
+import { env } from "cloudflare:workers";
+import { can, crmUser } from "@/lib/crm-auth";
+import { quickbooksAuthorizeUrl, quickbooksConfigured } from "@/lib/quickbooks";
+export async function GET(request:Request){const user=await crmUser(request);if(!user)return Response.json({error:"Sign in is required."},{status:401});if(!can(user,"integrations.manage"))return Response.json({error:"Integration access is required."},{status:403});if(!quickbooksConfigured())return Response.redirect(new URL("/?integration=quickbooks_setup",request.url));const state=crypto.randomUUID();await env.DB.prepare("INSERT INTO oauth_states(state,actor_email,expires_at,created_at) VALUES (?,?,datetime('now','+10 minutes'),datetime('now'))").bind(state,user.email).run();return Response.redirect(quickbooksAuthorizeUrl(new URL(request.url).origin,state));}
