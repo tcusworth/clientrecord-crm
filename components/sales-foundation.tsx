@@ -80,6 +80,7 @@ function AccountDetail({name,account:a,data,disabled,run,saved,removed}:{name:st
 
 function Pipelines({data,disabled,run}:{data:Data;disabled:boolean;run:Run}){
  const [pipelineId,setPipelineId]=useState("default"),[editing,setEditing]=useState<Deal|"new"|null>(null),[config,setConfig]=useState<Pipeline|"new"|null>(null),[draggedId,setDraggedId]=useState<number|null>(null),[dropTarget,setDropTarget]=useState<string|null>(null);
+ useEffect(()=>{const create=()=>setEditing("new");if(sessionStorage.getItem("clientrecord:quick-deal")){sessionStorage.removeItem("clientrecord:quick-deal");create()}window.addEventListener("crm:quick-deal",create);return()=>window.removeEventListener("crm:quick-deal",create)},[]);
  const pipe=data.pipelines.find(p=>p.id===pipelineId)||data.pipelines[0],deals=data.deals.filter(d=>d.pipeline_key===pipe.id);
  const unmapped=deals.filter(d=>!pipe.stages.some(s=>s.key===(d.stage_key||d.stage)));
  const open=deals.filter(d=>d.status==="Open"),overdue=data.tasks.filter(t=>!t.completed&&t.due_date<today());

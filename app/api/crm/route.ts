@@ -130,6 +130,15 @@ export async function POST(request: Request) {
       const next=clean(body.nextFollowUp); if(next){statements.push(env.DB.prepare("INSERT INTO tasks (contact_id,title,due_date,owner,status,completed) VALUES (?,?,?,?,'Open',0)").bind(contactId,"Follow up after "+type.toLowerCase(),next,clean(body.owner,"Trevor")),env.DB.prepare("UPDATE contacts SET next_follow_up=? WHERE id=?").bind(next,contactId));} await env.DB.batch(statements); return Response.json({status:"created"},{status:201});
     }
     if(body.action==="createTask"){const contactId=Number(body.contactId),title=clean(body.title),dueDate=clean(body.dueDate),owner=clean(body.owner,"Trevor");if(!contactId||!title||!dueDate)return Response.json({error:"Contact, task and due date are required."},{status:400});await env.DB.batch([env.DB.prepare("INSERT INTO tasks (contact_id,title,due_date,owner,status,completed) VALUES (?,?,?,?,'Open',0)").bind(contactId,title,dueDate,owner),env.DB.prepare("UPDATE contacts SET next_follow_up=? WHERE id=?").bind(dueDate,contactId)]);return Response.json({status:"created"},{status:201});}
+    if(body.action==="bulkUpdateContacts"){
+      const ids=Array.isArray(body.ids)?[...new Set(body.ids.map(Number).filter(id=>Number.isInteger(id)&&id>0))]:[],stage=clean(body.stage),addTag=clean(body.addTag);
+      if(!ids.length||ids.length>500)return Response.json({error:"Select between one and 500 contacts."},{status:400});
+      if(!stage&&!addTag)return Response.json({error:"Choose a lifecycle stage or tag to apply."},{status:400});
+      const contacts=(await env.DB.prepare(`SELECT id,tags FROM contacts WHERE id IN (${ids.map(()=>"?").join(",")})`).bind(...ids).all<Record<string,unknown>>()).results;
+      const statements=contacts.map(contact=>{let tags:string[]=[];try{const parsed=JSON.parse(String(contact.tags||"[]"));tags=Array.isArray(parsed)?parsed.map(String):[]}catch{}if(addTag&&!tags.some(tag=>tag.toLowerCase()===addTag.toLowerCase()))tags.push(addTag);return env.DB.prepare("UPDATE contacts SET stage=COALESCE(NULLIF(?,''),stage),tags=?,updated_at=datetime('now') WHERE id=?").bind(stage,JSON.stringify(tags),contact.id)});
+      if(!statements.length)return Response.json({error:"No selected contacts were found."},{status:404});
+      await env.DB.batch(statements);return Response.json({status:"updated",count:statements.length});
+    }
     if (body.action === "bulkImportContacts") {
       const contacts=Array.isArray(body.contacts)?body.contacts as Array<Record<string,unknown>>:[];if(!contacts.length||contacts.length>2000)return Response.json({error:"Import between 1 and 2,000 contacts at a time."},{status:400});
       const existingRows=(await env.DB.prepare("SELECT * FROM contacts").all<Record<string,unknown>>()).results,existing=new Map(existingRows.map(row=>[String(row.email).toLowerCase(),row])),suppressedSet=new Set((await env.DB.prepare("SELECT email FROM suppressions WHERE removed_at IS NULL").all()).results.map((r:Record<string,unknown>)=>String(r.email).toLowerCase())),batchId=crypto.randomUUID(),created=contacts.filter(c=>!existing.has(clean(c.email).toLowerCase())).length,updated=contacts.length-created;
