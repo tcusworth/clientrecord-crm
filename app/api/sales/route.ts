@@ -111,6 +111,7 @@ export async function POST(request:Request){
       const source=str(b.source).slice(0,1000),confidence=number(b.confidence,0,100),setSql=updates.map(item=>`${item.column}=?`).join(",");
       const mutation=db().prepare(`UPDATE companies SET ${setSql},enrichment_source=?,enrichment_confidence=?,enriched_at=?,updated_at=? WHERE id=?`).bind(...updates.map(item=>item.value),source,confidence,now,now,id);
       await db().batch([mutation,auditStatement(user.email,action,String(id),before,{fields:Object.fromEntries(updates.map(item=>[item.column,item.value])),source,confidence})]);
+      return Response.json({ok:true});
     }else if(action==="saveAccount"){
       const name=requireText(b.name,"Company name"),owner=requireText(b.owner,"Owner email").toLowerCase(),fit=number(b.fit_score);
       if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(owner))throw new Error("Use an email address for the account owner.");
