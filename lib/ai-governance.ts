@@ -16,6 +16,8 @@ export const aiFeatures = [
   { key:"meddpicc", name:"MEDDPICC completeness", mode:"Hybrid", phase:7, description:"Qualification coverage with missing evidence." },
   { key:"deal-risk", name:"Deal-risk summary", mode:"Hybrid", phase:7, description:"Source-backed risk factors and mitigation summary." },
   { key:"proposal-draft", name:"AI proposal draft", mode:"Generative", phase:8, description:"Editable, source-backed commercial proposal for a deal." },
+  { key:"deal-review", name:"AI deal-review copilot", mode:"Hybrid", phase:9, description:"Weekly deal movement, evidence, qualification gaps, close-date credibility, and actions." },
+  { key:"forecast-explanation", name:"AI forecast explanation", mode:"Hybrid", phase:9, description:"Evidence-backed explanation of forecast movement, commit coverage, and close-date risk." },
 ] as const;
 
 export const defaultAiSettings = {
