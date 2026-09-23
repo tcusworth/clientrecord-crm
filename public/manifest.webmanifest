@@ -1,0 +1,12 @@
+{
+  "name": "ClientRecord CRM",
+  "short_name": "ClientRecord",
+  "description": "Relationship, revenue, partner, and customer service workspace.",
+  "start_url": "/?view=field",
+  "display": "standalone",
+  "background_color": "#f4f6fb",
+  "theme_color": "#111b31",
+  "icons": [
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
