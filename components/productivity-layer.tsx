@@ -7,6 +7,7 @@ import { CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, C
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 
 export type CommandContact={id:number;firstName:string;lastName:string;email:string;company:string;title:string};
 export type CommandCompany={id:number;name:string;stage:string};
@@ -45,9 +46,8 @@ export function ProductivityLayer({contacts,companies,deals,onNavigate,onContact
  return <><DraftRecovery/><UndoCenter/>
   <button onClick={()=>setOpen(true)} className="hidden h-11 min-w-0 items-center gap-3 rounded-lg border bg-[#f7f8fa] px-3 text-left text-sm text-slate-500 hover:border-[#3968ff] md:flex" aria-label="Open command bar"><Search size={18}/><span className="flex-1 truncate">Search records or run a command</span><kbd className="rounded border bg-white px-1.5 py-0.5 text-[11px] text-slate-500">{shortcut}</kbd></button>
   <Button variant="outline" className="h-11 md:hidden" onClick={()=>setOpen(true)} aria-label="Search and commands"><Search size={18}/></Button>
-  <div className="fixed bottom-5 right-5 z-40 hidden flex-col items-end gap-2 lg:flex">
-   {quickOpen&&<div className="w-64 overflow-hidden rounded-2xl border bg-white p-2 shadow-2xl">{actionItems.map(item=>{const Icon=item.icon;return <button key={item.kind} onClick={()=>run(item.kind)} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left hover:bg-slate-50"><span className="grid h-8 w-8 place-items-center rounded-lg bg-blue-50 text-[#3968ff]"><Icon size={16}/></span><span><strong className="block text-sm">{item.label}</strong><span className="block text-xs text-slate-500">{item.hint}</span></span></button>})}</div>}
-   <Button size="icon" className="h-14 w-14 rounded-full bg-[#3968ff] shadow-lg" onClick={()=>setQuickOpen(value=>!value)} aria-label="Quick add"><Plus className={quickOpen?"rotate-45 transition":"transition"} size={24}/></Button>
+  <div className="fixed bottom-5 right-5 z-40 hidden lg:block">
+   <DropdownMenu open={quickOpen} onOpenChange={setQuickOpen}><DropdownMenuTrigger asChild><Button size="icon" className="h-14 w-14 rounded-full bg-[#3968ff] shadow-lg" aria-label="Open quick create menu" title="Quick create"><Plus className={quickOpen?"rotate-45 transition":"transition"} size={24}/></Button></DropdownMenuTrigger><DropdownMenuContent side="top" align="end" sideOffset={10} className="w-72 p-2"><DropdownMenuLabel>Quick create</DropdownMenuLabel><DropdownMenuSeparator/>{actionItems.map(item=>{const Icon=item.icon;return <DropdownMenuItem key={item.kind} className="items-start gap-3 p-3" onSelect={()=>run(item.kind)}><span className="grid h-8 w-8 shrink-0 place-items-center rounded-md bg-blue-50 text-[#3968ff]"><Icon size={16}/></span><span><strong className="block font-medium">{item.label}</strong><span className="mt-0.5 block text-xs text-slate-500">{item.hint}</span></span></DropdownMenuItem>})}</DropdownMenuContent></DropdownMenu>
   </div>
   <CommandDialog open={open} onOpenChange={setOpen} title="ClientRecord command bar" description="Find records, navigate, or run a CRM action." className="w-[calc(100vw-2rem)] max-w-2xl">
    <CommandInput value={query} onValueChange={setQuery} placeholder="Try: deal Acme renewal $25000 close 2026-12-15" />
