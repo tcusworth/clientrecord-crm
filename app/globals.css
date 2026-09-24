@@ -51,3 +51,14 @@ button { cursor: pointer; }
 html[data-contact-density="compact"] main section.overflow-hidden > button { padding-top: .5rem !important; padding-bottom: .5rem !important; }
 @media (min-width: 768px) { .console-kpis { grid-template-columns: repeat(4,minmax(0,1fr)); } }
 @media (max-width: 767px) { .console-kpi:nth-child(2) { border-right: 0; } .console-kpi:nth-child(-n+2) { border-bottom: 1px solid var(--border); } }
+.universal-table { width: 100%; min-width: 960px; border-collapse: collapse; text-align: left; font-size: 13px; }
+.universal-table thead { position: sticky; top: 0; z-index: 2; background: #f7f8fa; color: #64748b; }
+.universal-table th { height: 42px; padding: 8px 12px; font-size: 11px; font-weight: 650; text-transform: uppercase; }
+.universal-table td { height: 58px; border-top: 1px solid var(--border); padding: 8px 12px; vertical-align: middle; }
+.universal-table.is-compact td { height: 42px; padding-top: 5px; padding-bottom: 5px; }
+.universal-table tbody tr:hover { background: #f8faff; }
+.inline-select { max-width: 150px; border: 0; background: transparent; padding: 4px; font-size: 12px; }
+.skeleton-workspace { min-height: 520px; border-radius: 8px; background: linear-gradient(90deg,#eef1f5 25%,#f8fafc 37%,#eef1f5 63%); background-size: 400% 100%; animation: skeleton-wave 1.4s ease infinite; }
+.mobile-action { display: flex; min-width: 0; flex-direction: column; align-items: center; justify-content: center; gap: 3px; color: #475569; font-size: 10px; }
+.mobile-action:hover { background: #f1f5f9; color: #2749bd; }
+@keyframes skeleton-wave { 0% { background-position: 100% 0; } 100% { background-position: 0 0; } }

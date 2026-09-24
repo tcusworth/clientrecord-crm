@@ -9,6 +9,7 @@ import { DealCollaboration, DataQualityPanel } from "@/components/deal-collabora
 import { AIRecordFieldsPanel } from "@/components/ai-record-fields";
 import { dealRequiredFieldOptions, defaultPipeline, type Pipeline, type Stage } from "@/lib/sales-rules";
 import { CustomFieldInput, customFieldValue, type CustomFieldDefinition, type CustomFieldValue } from "@/components/custom-fields";
+import { DealWorkspace } from "@/components/deal-workspace";
 
 type Account={primary_contact_id:number|null;id:number;name:string;stage:string;notes:string;website:string;domain:string;industry:string;tier:string;territory:string;owner:string;tags:string;fit_score:number;fit_reason:string;intent_score:number;temperature:string;summary:string;headquarters:string;linkedin_url:string;logo_url:string;employee_range:string;enrichment_source:string;enrichment_confidence:number;enriched_at:string|null;updated_at:string};
 type EnrichmentProposal={website:string;domain:string;summary:string;industry:string;headquarters:string;linkedin_url:string;logo_url:string;employee_range:string;source:string;confidence:number;evidence:string[]};
@@ -30,10 +31,11 @@ function Panel({children,className=""}:{children:ReactNode;className?:string}){r
 function Field({label,...props}:{label:string}&React.InputHTMLAttributes<HTMLInputElement>){return <label className="grid gap-1 text-sm font-medium">{label}<Input {...props}/></label>}
 function Select({label,children,...props}:{label:string;children:ReactNode}&React.SelectHTMLAttributes<HTMLSelectElement>){return <label className="grid gap-1 text-sm font-medium">{label}<select className={selectClass} {...props}>{children}</select></label>}
 function Temperature({value}:{value:string}){return <span className={"inline-flex rounded-full px-2.5 py-1 text-xs font-semibold "+(value==="Hot"?"bg-orange-100 text-orange-800":value==="Lukewarm"?"bg-amber-100 text-amber-800":"bg-sky-100 text-sky-800")}>{value}</span>}
-function Dialog({title,children,close}:{title:string;children:ReactNode;close:()=>void}){return <AccessibleDialog open onOpenChange={v=>{if(!v)close()}}><DialogContent aria-describedby={undefined} className="flex h-[calc(100dvh-1rem)] w-[calc(100vw-1rem)] max-w-[96rem] flex-col gap-0 overflow-hidden rounded-2xl p-0 sm:h-[calc(100dvh-2rem)] sm:w-[calc(100vw-2rem)]"><div className="shrink-0 border-b px-5 py-4"><DialogTitle className="pr-8 text-xl font-semibold">{title}</DialogTitle></div><div className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden p-5"><div className="min-w-0">{children}</div></div></DialogContent></AccessibleDialog>}
+function Dialog({title,children,close}:{title:string;children:ReactNode;close:()=>void}){return <AccessibleDialog open onOpenChange={v=>{if(!v)close()}}><DialogContent aria-describedby={undefined} className="!inset-y-0 !left-auto !right-0 !top-0 flex !h-dvh !w-full !max-w-5xl !translate-x-0 !translate-y-0 flex-col gap-0 overflow-hidden !rounded-none border-l p-0"><div className="shrink-0 border-b px-5 py-4"><DialogTitle className="pr-8 text-xl font-semibold">{title}</DialogTitle></div><div className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden p-5"><div className="min-w-0">{children}</div></div></DialogContent></AccessibleDialog>}
 function payload(e:FormEvent<HTMLFormElement>){e.preventDefault();return Object.fromEntries(new FormData(e.currentTarget).entries());}
 
 export function SalesFoundation({section}:{section:"companies"|"deals"}){
+ if(section==="deals")return <DealWorkspace/>;
  const [data,setData]=useState<Data|null>(null),[error,setError]=useState(""),[busy,setBusy]=useState(false),[notice,setNotice]=useState("");
  const load=useCallback(async()=>{const r=await fetch("/api/sales",{cache:"no-store"}),d=await r.json() as Data & {error?:string};if(!r.ok)throw new Error(d.error);setData(d)},[]);
  useEffect(()=>{void load().catch(e=>setError(e.message))},[load]);
