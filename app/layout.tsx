@@ -8,8 +8,9 @@ export const metadata: Metadata = {
   manifest: "/manifest.webmanifest",
   appleWebApp: { capable:true, title:"ClientRecord", statusBarStyle:"black-translucent" },
   icons: {
-    icon: "/favicon.svg",
-    shortcut: "/favicon.svg",
+    icon: "/brand/clientrecord-icon.png",
+    shortcut: "/brand/clientrecord-icon.png",
+    apple: "/brand/clientrecord-icon.png",
   },
 };
 

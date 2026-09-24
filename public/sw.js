@@ -1,5 +1,5 @@
-const CACHE = "clientrecord-shell-v1";
-const SHELL = ["/favicon.svg", "/manifest.webmanifest"];
+const CACHE = "clientrecord-shell-v2";
+const SHELL = ["/brand/clientrecord-icon.png", "/brand/clientrecord-logo.png", "/manifest.webmanifest"];
 self.addEventListener("install", event => event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL))));
 self.addEventListener("activate", event => event.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(key => key !== CACHE).map(key => caches.delete(key))))));
 self.addEventListener("fetch", event => {
@@ -11,5 +11,5 @@ self.addEventListener("fetch", event => {
       caches.open(CACHE).then(cache => cache.put(request, copy));
     }
     return response;
-  }).catch(() => caches.match(request).then(response => response || caches.match("/favicon.svg"))));
+  }).catch(() => caches.match(request).then(response => response || caches.match("/brand/clientrecord-icon.png"))));
 });

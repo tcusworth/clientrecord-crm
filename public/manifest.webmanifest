@@ -7,6 +7,6 @@
   "background_color": "#f4f6fb",
   "theme_color": "#111b31",
   "icons": [
-    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+    { "src": "/brand/clientrecord-icon.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
   ]
 }
