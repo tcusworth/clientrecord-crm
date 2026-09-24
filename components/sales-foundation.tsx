@@ -26,7 +26,7 @@ const today=()=>new Date().toISOString().slice(0,10);
 const money=(n:number)=>new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",maximumFractionDigits:0}).format(n/100);
 const date=(v:string)=>v?new Date(v).toLocaleString():"Unknown";
 const accountRole=(value:string|undefined)=>value==="Colleague"?"Other":value==="Legal / procurement"?"Legal/procurement":value||"Other";
-function Panel({children,className=""}:{children:ReactNode;className?:string}){return <section className={"rounded-2xl border bg-white p-5 shadow-sm "+className}>{children}</section>}
+function Panel({children,className=""}:{children:ReactNode;className?:string}){return <section className={"rounded-lg border bg-white p-5 shadow-[0_1px_2px_rgba(15,23,42,.03)] "+className}>{children}</section>}
 function Field({label,...props}:{label:string}&React.InputHTMLAttributes<HTMLInputElement>){return <label className="grid gap-1 text-sm font-medium">{label}<Input {...props}/></label>}
 function Select({label,children,...props}:{label:string;children:ReactNode}&React.SelectHTMLAttributes<HTMLSelectElement>){return <label className="grid gap-1 text-sm font-medium">{label}<select className={selectClass} {...props}>{children}</select></label>}
 function Temperature({value}:{value:string}){return <span className={"inline-flex rounded-full px-2.5 py-1 text-xs font-semibold "+(value==="Hot"?"bg-orange-100 text-orange-800":value==="Lukewarm"?"bg-amber-100 text-amber-800":"bg-sky-100 text-sky-800")}>{value}</span>}
