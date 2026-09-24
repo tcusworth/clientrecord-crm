@@ -1,9 +1,12 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Building2, CheckSquare, ClipboardPlus, FileText, Keyboard, Mail, MessageSquareText, Plus, Search, Settings, Users } from "lucide-react";
+import { Building2, Check, CheckSquare, ClipboardPlus, FileText, Keyboard, Mail, MessageSquareText, Plus, RotateCcw, Search, Settings, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandSeparator, CommandShortcut } from "@/components/ui/command";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 
 export type CommandContact={id:number;firstName:string;lastName:string;email:string;company:string;title:string};
 export type CommandCompany={id:number;name:string;stage:string};
@@ -12,7 +15,7 @@ export type CommandDeal={id:number;name:string;company:string;stage:string;owner
 type Props={
  contacts:CommandContact[];companies:CommandCompany[];deals:CommandDeal[];
  onNavigate:(section:string)=>void;onContact:(contact:CommandContact)=>void;
- onCreate:(kind:"contact"|"company"|"deal"|"task"|"activity"|"document"|"campaign"|"bulk")=>void;
+ onCreate:(kind:"contact"|"company"|"deal"|"task"|"activity"|"document"|"campaign"|"bulk")=>void;onCommitted?:()=>Promise<void>|void;
 };
 
 const actionItems=[
@@ -26,14 +29,19 @@ const actionItems=[
  {kind:"campaign",label:"Create email",hint:"Start an outreach draft",icon:Mail},
 ] as const;
 
-export function ProductivityLayer({contacts,companies,deals,onNavigate,onContact,onCreate}:Props){
- const [open,setOpen]=useState(false),[quickOpen,setQuickOpen]=useState(false);
+type Draft=Record<string,string|number|null>;
+function parsedCommand(query:string,contacts:CommandContact[],companies:CommandCompany[],deals:CommandDeal[]):Draft|null{const input=query.trim(),verb=input.split(/\s+/)[0]?.toLowerCase(),rest=input.slice(verb.length).trim(),money=rest.match(/(?:\$|value\s+)([\d,.]+)/i),close=rest.match(/(?:close|closing)\s+(\d{4}-\d{2}-\d{2})/i),email=rest.match(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/)?.[0]||"";if(verb==="contact"&&rest){const company=rest.match(/\s+(?:at|@)\s+(.+?)(?=\s+[\w.+-]+@[\w.-]+|$)/i)?.[1]||"",name=rest.replace(email,"").replace(/\s+(?:at|@)\s+.+$/i,"").trim();return {kind:"contact",name,email,company,title:"",phone:"",location:"",stage:"Lead"}}if(verb==="deal"&&rest){const company=companies.find(item=>rest.toLowerCase().includes(item.name.toLowerCase())),name=rest.replace(money?.[0]||"","").replace(close?.[0]||"","").trim();return {kind:"deal",name,companyId:company?.id||null,company:company?.name||"",value:money?.[1]?.replaceAll(",","")||0,closeDate:close?.[1]||"",nextStep:"Qualify opportunity"}}if((verb==="task"||verb==="activity")&&rest){const contact=contacts.find(item=>rest.toLowerCase().includes(`${item.firstName} ${item.lastName}`.toLowerCase())||rest.toLowerCase().includes(item.email.toLowerCase())),deal=deals.find(item=>rest.toLowerCase().includes(item.name.toLowerCase()));let detail=rest;if(contact)detail=detail.replace(new RegExp(`${contact.firstName}\\s+${contact.lastName}`,"i"),"");if(deal)detail=detail.replace(deal.name,"");detail=detail.trim();return verb==="task"?{kind:"task",title:detail,contactId:contact?.id||null,dealId:deal?.id||null,dueDate:new Date(Date.now()+86400000).toISOString().slice(0,10)}:{kind:"activity",note:detail,contactId:contact?.id||null,dealId:deal?.id||null,type:"Note",outcome:""}}return null}
+
+export function ProductivityLayer({contacts,companies,deals,onNavigate,onContact,onCreate,onCommitted}:Props){
+ const [open,setOpen]=useState(false),[quickOpen,setQuickOpen]=useState(false),[query,setQuery]=useState(""),[draft,setDraft]=useState<Draft|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState("");
  const shortcut=typeof navigator!=="undefined"&&/mac/i.test(navigator.platform)?"⌘K":"Ctrl K";
  useEffect(()=>{const onKey=(event:KeyboardEvent)=>{const target=event.target as HTMLElement|null,typing=Boolean(target?.closest("input,textarea,select,[contenteditable='true']"));if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==="k"){event.preventDefault();setOpen(value=>!value);return}if(event.key==="Escape"){setOpen(false);setQuickOpen(false);return}if(typing)return;if(event.shiftKey&&event.key.toLowerCase()==="t"){event.preventDefault();onNavigate("today");return}if(event.shiftKey&&event.key.toLowerCase()==="a"){event.preventDefault();onCreate("activity");return}if(event.key.toLowerCase()==="n"){event.preventDefault();setQuickOpen(value=>!value)}};window.addEventListener("keydown",onKey);return()=>window.removeEventListener("keydown",onKey)},[onCreate,onNavigate]);
  const topContacts=useMemo(()=>contacts.slice(0,80),[contacts]);
+ const commandDraft=useMemo(()=>parsedCommand(query,contacts,companies,deals),[query,contacts,companies,deals]);
  const run=(kind:typeof actionItems[number]["kind"])=>{setOpen(false);setQuickOpen(false);onCreate(kind)};
  const go=(section:string)=>{setOpen(false);onNavigate(section)};
- return <><DraftRecovery/>
+ async function commitDraft(){if(!draft)return;setBusy(true);setError("");try{const response=await fetch("/api/quick-capture",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"commitDraft",draft})}),body=await response.json() as{error?:string;undoToken?:string};if(!response.ok)throw new Error(body.error||"Draft could not be saved.");window.dispatchEvent(new CustomEvent("crm:undoable",{detail:{token:body.undoToken,label:`${String(draft.kind)} created`}}));setDraft(null);setQuery("");await onCommitted?.()}catch(reason){setError(reason instanceof Error?reason.message:"Draft could not be saved.")}finally{setBusy(false)}}
+ return <><DraftRecovery/><UndoCenter/>
   <button onClick={()=>setOpen(true)} className="hidden h-11 min-w-0 items-center gap-3 rounded-lg border bg-[#f7f8fa] px-3 text-left text-sm text-slate-500 hover:border-[#3968ff] md:flex" aria-label="Open command bar"><Search size={18}/><span className="flex-1 truncate">Search records or run a command</span><kbd className="rounded border bg-white px-1.5 py-0.5 text-[11px] text-slate-500">{shortcut}</kbd></button>
   <Button variant="outline" className="h-11 md:hidden" onClick={()=>setOpen(true)} aria-label="Search and commands"><Search size={18}/></Button>
   <div className="fixed bottom-5 right-5 z-40 flex flex-col items-end gap-2">
@@ -44,8 +52,9 @@ export function ProductivityLayer({contacts,companies,deals,onNavigate,onContact
    <button onClick={()=>go("today")} className="grid place-items-center gap-1 rounded-lg py-2 text-xs text-slate-600"><CheckSquare size={18}/>Today</button><button onClick={()=>setOpen(true)} className="grid place-items-center gap-1 rounded-lg py-2 text-xs text-slate-600"><Search size={18}/>Find</button><button onClick={()=>run("activity")} className="grid place-items-center gap-1 rounded-lg py-2 text-xs text-slate-600"><MessageSquareText size={18}/>Log</button><button onClick={()=>setQuickOpen(true)} className="grid place-items-center gap-1 rounded-lg py-2 text-xs text-slate-600"><Plus size={18}/>Add</button>
   </div>
   <CommandDialog open={open} onOpenChange={setOpen} title="ClientRecord command bar" description="Find records, navigate, or run a CRM action." className="w-[calc(100vw-2rem)] max-w-2xl">
-   <CommandInput placeholder="Search people, companies, deals, or commands…" />
+   <CommandInput value={query} onValueChange={setQuery} placeholder="Try: deal Acme renewal $25000 close 2026-12-15" />
    <CommandList><CommandEmpty>No matching records or commands.</CommandEmpty>
+    {commandDraft&&<CommandGroup heading="Parsed draft"><CommandItem value={`Create ${query}`} onSelect={()=>{setOpen(false);setDraft(commandDraft)}}><Check/><span className="min-w-0 flex-1 truncate">Review and create: {query}</span><CommandShortcut>Enter</CommandShortcut></CommandItem></CommandGroup>}
     <CommandGroup heading="Create and log">{actionItems.map(item=>{const Icon=item.icon;return <CommandItem key={item.kind} value={`${item.label} ${item.hint}`} onSelect={()=>run(item.kind)}><Icon/><span>{item.label}</span><span className="ml-auto text-xs text-slate-500">{item.hint}</span></CommandItem>})}</CommandGroup>
     <CommandSeparator/>
     <CommandGroup heading="Go to">{[["today","Today"],["dashboard","Dashboard"],["contacts","Contacts"],["companies","Companies"],["deals","Pipelines"],["documents","Documents"],["settings","Settings"]].map(([id,label])=><CommandItem key={id} value={`Go to ${label}`} onSelect={()=>go(id)}><Keyboard/><span>{label}</span>{label==="Today"&&<CommandShortcut>G T</CommandShortcut>}</CommandItem>)}</CommandGroup>
@@ -55,20 +64,24 @@ export function ProductivityLayer({contacts,companies,deals,onNavigate,onContact
     <CommandGroup heading="Deals">{deals.slice(0,50).map(deal=><CommandItem key={deal.id} value={`${deal.name} ${deal.company} ${deal.stage} ${deal.owner}`} onSelect={()=>go("deals")}><ClipboardPlus/><span className="min-w-0 flex-1 truncate">{deal.name}<span className="ml-2 text-xs text-slate-500">{deal.company||deal.stage}</span></span></CommandItem>)}</CommandGroup>
    </CommandList>
  </CommandDialog>
+ <Dialog open={Boolean(draft)} onOpenChange={next=>{if(!next){setDraft(null);setError("")}}}><DialogContent><DialogHeader><DialogTitle>Review {String(draft?.kind||"")} draft</DialogTitle><DialogDescription>Confirm or edit the parsed values. Nothing is saved until you create it.</DialogDescription></DialogHeader>{draft&&<div className="grid gap-3">{Object.entries(draft).filter(([key])=>!(["kind","contactId","dealId","companyId"].includes(key))).map(([key,value])=><label key={key} className="grid gap-1 text-sm font-medium"><span className="capitalize">{key.replace(/([A-Z])/g," $1")}</span>{key==="note"||key==="nextStep"?<Textarea value={String(value??"")} onChange={event=>setDraft(current=>({...current!,[key]:event.target.value}))}/>:<Input type={key.toLowerCase().includes("date")?"date":key==="value"?"number":"text"} value={String(value??"")} onChange={event=>setDraft(current=>({...current!,[key]:event.target.value}))}/>}</label>)}{error&&<p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}<Button disabled={busy} onClick={()=>void commitDraft()}><Check size={16}/>{busy?"Creating…":"Create reviewed draft"}</Button></div>}</DialogContent></Dialog>
  </>;
 }
 
 function DraftRecovery(){
+ const [status,setStatus]=useState("");
  useEffect(()=>{
-  const key=(form:HTMLFormElement)=>`clientrecord:draft:${location.pathname}:${form.getAttribute("data-draft-key")||Array.from(form.elements).filter((element):element is HTMLInputElement|HTMLTextAreaElement|HTMLSelectElement=>Boolean((element as HTMLInputElement).name)).map(element=>element.name).slice(0,8).join("|")}`;
-  const write=(form:HTMLFormElement)=>{const values:Array<[string,string|boolean]>=[];for(const element of Array.from(form.elements)){if(!(element instanceof HTMLInputElement||element instanceof HTMLTextAreaElement||element instanceof HTMLSelectElement)||!element.name||element.type==="file")continue;values.push([element.name,element instanceof HTMLInputElement&&element.type==="checkbox"?element.checked:element.value])}if(values.length)sessionStorage.setItem(key(form),JSON.stringify(values))};
+	  const key=(form:HTMLFormElement)=>`clientrecord:draft:${location.pathname}:${form.getAttribute("data-draft-key")||Array.from(form.querySelectorAll("[name]")).map(element=>(element as HTMLInputElement).name).slice(0,8).join("|")}`;
+  let timer=0;const write=(form:HTMLFormElement)=>{const values:Array<[string,string|boolean]>=[];for(const element of Array.from(form.elements)){if(!(element instanceof HTMLInputElement||element instanceof HTMLTextAreaElement||element instanceof HTMLSelectElement)||!element.name||element.type==="file")continue;values.push([element.name,element instanceof HTMLInputElement&&element.type==="checkbox"?element.checked:element.value])}if(values.length){sessionStorage.setItem(key(form),JSON.stringify(values));setStatus("Draft saved on this device");window.clearTimeout(timer);timer=window.setTimeout(()=>setStatus(""),1800)}};
   const restore=(form:HTMLFormElement)=>{if(form.dataset.draftRestored)return;form.dataset.draftRestored="true";let values:Array<[string,string|boolean]> = [];try{values=JSON.parse(sessionStorage.getItem(key(form))||"[]")}catch{}for(const [name,value] of values){const element=form.elements.namedItem(name);if(!(element instanceof HTMLInputElement||element instanceof HTMLTextAreaElement||element instanceof HTMLSelectElement))continue;if(element instanceof HTMLInputElement&&element.type==="checkbox"){if(!element.checked)element.checked=Boolean(value)}else if(!element.value)element.value=String(value)}};
   const closest=(target:EventTarget|null)=>target instanceof Element?target.closest("form"):null;
   const save=(event:Event)=>{const form=closest(event.target);if(form)write(form)};
   const recover=(event:Event)=>{const form=closest(event.target);if(form)restore(form)};
   const clear=(event:Event)=>{const form=event.target instanceof HTMLFormElement?event.target:null;if(form)sessionStorage.removeItem(key(form))};
   document.addEventListener("input",save,true);document.addEventListener("change",save,true);document.addEventListener("focusin",recover,true);document.addEventListener("submit",clear,true);
-  return()=>{document.removeEventListener("input",save,true);document.removeEventListener("change",save,true);document.removeEventListener("focusin",recover,true);document.removeEventListener("submit",clear,true)};
+  return()=>{window.clearTimeout(timer);document.removeEventListener("input",save,true);document.removeEventListener("change",save,true);document.removeEventListener("focusin",recover,true);document.removeEventListener("submit",clear,true)};
  },[]);
- return null;
+ return status?<div className="fixed bottom-5 left-1/2 z-[70] -translate-x-1/2 rounded-lg border bg-white px-3 py-2 text-xs text-slate-600 shadow-lg"><Check className="mr-1 inline" size={13}/>{status}</div>:null;
 }
+
+function UndoCenter(){const[item,setItem]=useState<{token:string;label:string}|null>(null),[busy,setBusy]=useState(false);useEffect(()=>{const show=(event:Event)=>{const detail=(event as CustomEvent<{token:string;label:string}>).detail;if(!detail?.token)return;setItem(detail);window.setTimeout(()=>setItem(current=>current?.token===detail.token?null:current),15000)};window.addEventListener("crm:undoable",show);return()=>window.removeEventListener("crm:undoable",show)},[]);if(!item)return null;return <div className="fixed bottom-5 left-1/2 z-[80] flex -translate-x-1/2 items-center gap-3 rounded-lg bg-slate-950 px-4 py-3 text-sm text-white shadow-xl"><Check size={16}/><span>{item.label}</span><button disabled={busy} className="flex items-center gap-1 font-semibold text-blue-300" onClick={async()=>{setBusy(true);const response=await fetch("/api/quick-capture",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"undo",token:item.token})});setBusy(false);if(response.ok)setItem(null)}}><RotateCcw size={14}/>Undo</button></div>}
