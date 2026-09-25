@@ -50,3 +50,6 @@ next-env.d.ts
 
 # release archives
 *.tgz
+
+# data exports (scripts/export-from-live.mjs) contain all CRM data
+/migration-export/

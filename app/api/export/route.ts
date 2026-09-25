@@ -1,9 +1,8 @@
 import { env } from "cloudflare:workers";
 import { can, crmUser } from "@/lib/crm-auth";
 import { backupTables } from "@/lib/operations";
+import { csvCell as csv } from "@/lib/csv";
 
-// Prefix text cells that a spreadsheet would treat as a formula (CSV/formula injection); numbers stay numeric.
-function csv(value:unknown){const raw=value==null?"":String(value),text=typeof value!=="number"&&/^[=+\-@\t\r]/.test(raw)?`'${raw}`:raw;return /[",\r\n]/.test(text)?`"${text.replaceAll('"','""')}"`:text;}
 function download(name:string,headers:string[],rows:unknown[][]){const body=[headers,...rows].map(row=>row.map(csv).join(",")).join("\r\n");return new Response(body,{headers:{"content-type":"text/csv; charset=utf-8","content-disposition":`attachment; filename="${name}"`}});}
 
 export async function GET(request:Request){
