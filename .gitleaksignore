@@ -1,0 +1,3 @@
+# Fake encryption key used only by the security tests (not a real secret).
+cc099723408597aa2b4fa27ac86d72ebfe51929b:scripts/test-security.mjs:generic-api-key:4
+scripts/test-security.mjs:generic-api-key:4

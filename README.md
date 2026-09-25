@@ -27,6 +27,10 @@ Local sign-in: under the dev server (`NODE_ENV=development`) requests to `localh
 | `pnpm test` | Run every `scripts/test-*.mjs` (in-memory SQLite with all migrations; see `scripts/test-helpers.mjs`) |
 | `pnpm db:generate` | Generate a Drizzle migration in `drizzle/` from `db/schema.ts` |
 
+### Secret scanning
+
+A pre-commit hook in `.githooks/pre-commit` runs [gitleaks](https://github.com/gitleaks/gitleaks) on staged changes and blocks commits that add secrets. Enable it once per clone with `brew install gitleaks` and `git config core.hooksPath .githooks`. Known false positives go in `.gitleaksignore`.
+
 ## Database and migrations
 
 `db/schema.ts` is the source of truth for the schema and is used only by drizzle-kit to generate SQL; the app itself queries D1 with raw SQL through the `DB` binding. After editing the schema run `pnpm db:generate`, review the generated `drizzle/NNNN_*.sql`, and commit it with `drizzle/meta/`.
