@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { fromEmail, resend, resendConfigured, sendingIdentity } from "@/lib/resend";
 import { audit, can, canAdmin, crmUser, displayName } from "@/lib/crm-auth";
 import { maybeRunDailyMaintenance } from "@/lib/operations";
+import { companyDetail, companyQuery, contactDetail, contactFilter, contactQuery, contactSummary, contactWhere, listCompanies, listContacts, reconcileCompanyNames, reconcileCompanyNamesStatements, recordMentions, searchRecords, segmentCounts, type SegmentRule } from "@/lib/crm-records";
 
 function clean(value: unknown, fallback = "") { return typeof value === "string" ? value.trim() : fallback; }
 const LIMITS = { notes: 20000, subject: 500, html: 500000 } as const;
@@ -27,7 +28,6 @@ async function customFieldChanges(body: Record<string, unknown>, entityType: "co
   }
   return statements;
 }
-type SegmentRule={id:number;name:string;stage:string;tag:string;company:string;location:string;subscription:string;inactivityDays:number};
 function audienceMatch(contact: Record<string, unknown>, audience: string, segment?: SegmentRule|null) {
   if (!Boolean(contact.subscribed)) return false;
   if(segment){const tags=contact.tags as string[];if(segment.stage!=="Any"&&contact.stage!==segment.stage)return false;if(segment.tag&&!tags.some(tag=>tag.toLowerCase()===segment.tag.toLowerCase()))return false;if(segment.company&&!String(contact.company).toLowerCase().includes(segment.company.toLowerCase()))return false;if(segment.location&&!String(contact.location).toLowerCase().includes(segment.location.toLowerCase()))return false;if(segment.inactivityDays>0){const cutoff=Date.now()-segment.inactivityDays*86400000;if(contact.lastContact&&new Date(String(contact.lastContact)).getTime()>cutoff)return false;}return true;}
@@ -43,24 +43,37 @@ async function contactRows(): Promise<ContactRow[]> {
 async function campaignRow(id: number) {
   return await env.DB.prepare("SELECT id, name, subject, preview_text AS previewText, html, text_body AS textBody, status, audience, recipient_count AS recipientCount, resend_segment_id AS resendSegmentId, resend_broadcast_id AS resendBroadcastId, scheduled_at AS scheduledAt, sent_at AS sentAt, delivered_count AS deliveredCount, opened_count AS openedCount, clicked_count AS clickedCount, bounced_count AS bouncedCount, complained_count AS complainedCount, created_at AS createdAt, updated_at AS updatedAt FROM campaigns WHERE id=?").bind(id).first<Record<string, unknown>>();
 }
+const CAMPAIGN_LIST_COLUMNS="id, name, subject, preview_text AS previewText, status, audience, recipient_count AS recipientCount, resend_segment_id AS resendSegmentId, resend_broadcast_id AS resendBroadcastId, scheduled_at AS scheduledAt, sent_at AS sentAt, delivered_count AS deliveredCount, opened_count AS openedCount, clicked_count AS clickedCount, bounced_count AS bouncedCount, complained_count AS complainedCount, created_at AS createdAt, updated_at AS updatedAt";
+// First-screen payload: no contact or company lists (those are paged/searched via ?resource=...), counts come from SQL, and
+// campaign HTML bodies are fetched only when a campaign is opened. One D1 batch = one round trip.
 async function readAll(account:{id:string;email:string;role:string}) {
-  const [contacts, activities, tasks, campaigns, segments, suppressions, campaignEvents, companies, consentEvents, customFields, customValues] = await Promise.all([
-    contactRows(),
-    env.DB.prepare("SELECT a.id, a.contact_id AS contactId, a.type, a.note, a.happened_at AS happenedAt, c.first_name || ' ' || c.last_name AS contactName FROM activities a JOIN contacts c ON c.id = a.contact_id ORDER BY a.happened_at DESC LIMIT 100").all(),
-    env.DB.prepare("SELECT t.id, t.contact_id AS contactId, t.title, t.due_date AS dueDate,t.owner,t.status,t.completed, c.first_name || ' ' || c.last_name AS contactName,c.company FROM tasks t JOIN contacts c ON c.id = t.contact_id ORDER BY t.completed, t.due_date").all(),
-    env.DB.prepare("SELECT id, name, subject, preview_text AS previewText, html, text_body AS textBody, status, audience, recipient_count AS recipientCount, resend_segment_id AS resendSegmentId, resend_broadcast_id AS resendBroadcastId, scheduled_at AS scheduledAt, sent_at AS sentAt, delivered_count AS deliveredCount, opened_count AS openedCount, clicked_count AS clickedCount, bounced_count AS bouncedCount, complained_count AS complainedCount, created_at AS createdAt, updated_at AS updatedAt FROM campaigns ORDER BY created_at DESC").all(),
-    env.DB.prepare("SELECT id,name,stage,tag,company,location,subscription,inactivity_days AS inactivityDays,created_at AS createdAt,updated_at AS updatedAt FROM segments ORDER BY name").all(),
-    env.DB.prepare("SELECT id,email,reason,source,created_at AS createdAt FROM suppressions WHERE removed_at IS NULL ORDER BY created_at DESC").all(),
-    env.DB.prepare("SELECT e.id,e.campaign_id AS campaignId,e.type,e.recipient,e.occurred_at AS occurredAt,c.name AS campaignName,c.subject FROM campaign_events e JOIN campaigns c ON c.id=e.campaign_id ORDER BY e.occurred_at DESC LIMIT 500").all(),
-    env.DB.prepare("SELECT id,name,stage,notes,primary_contact_id AS primaryContactId,updated_at AS updatedAt FROM companies ORDER BY name").all(),
-    env.DB.prepare("SELECT id,email,status,reason,source,occurred_at AS occurredAt FROM consent_events ORDER BY occurred_at DESC LIMIT 500").all(),
-    env.DB.prepare("SELECT id,entity_type AS entityType,name,field_key AS fieldKey,field_type AS fieldType,options FROM custom_field_definitions WHERE entity_type='contact' ORDER BY name").all(),
-    env.DB.prepare("SELECT definition_id AS definitionId,entity_type AS entityType,entity_id AS entityId,value FROM custom_field_values WHERE entity_type='contact'").all(),
+  const [activities, tasks, campaigns, segments, suppressions, campaignEvents, customFields, brandRows] = await env.DB.batch([
+    env.DB.prepare("SELECT a.id, a.contact_id AS contactId, a.type, a.note, a.happened_at AS happenedAt, c.first_name || ' ' || c.last_name AS contactName FROM activities a JOIN contacts c ON c.id = a.contact_id ORDER BY a.happened_at DESC LIMIT 100"),
+    env.DB.prepare("SELECT t.id, t.contact_id AS contactId, t.title, t.due_date AS dueDate,t.owner,t.status,t.completed, c.first_name || ' ' || c.last_name AS contactName,c.company FROM tasks t JOIN contacts c ON c.id = t.contact_id WHERE t.completed=0 ORDER BY t.due_date LIMIT 500"),
+    env.DB.prepare(`SELECT ${CAMPAIGN_LIST_COLUMNS} FROM campaigns ORDER BY created_at DESC`),
+    env.DB.prepare("SELECT id,name,stage,tag,company,location,subscription,inactivity_days AS inactivityDays,created_at AS createdAt,updated_at AS updatedAt FROM segments ORDER BY name"),
+    env.DB.prepare("SELECT id,email,reason,source,created_at AS createdAt FROM suppressions WHERE removed_at IS NULL ORDER BY created_at DESC"),
+    env.DB.prepare("SELECT e.id,e.campaign_id AS campaignId,e.type,e.recipient,e.occurred_at AS occurredAt,c.name AS campaignName,c.subject FROM campaign_events e JOIN campaigns c ON c.id=e.campaign_id ORDER BY e.occurred_at DESC LIMIT 500"),
+    env.DB.prepare("SELECT id,entity_type AS entityType,name,field_key AS fieldKey,field_type AS fieldType,options FROM custom_field_definitions WHERE entity_type='contact' ORDER BY name"),
+    env.DB.prepare("SELECT business_name AS businessName,from_name AS fromName,physical_address AS physicalAddress,sending_domain AS sendingDomain,logo_url AS logoUrl FROM brand_settings WHERE id=1"),
   ]);
-  const segmentRows=segments.results.map((s:Record<string,unknown>)=>({...s,recipientCount:contacts.filter(c=>audienceMatch(c,`segment:${s.id}`,s as unknown as SegmentRule)).length}));
-  const duplicates:Array<{a:number;b:number;reason:string}>=[];for(let i=0;i<contacts.length;i++)for(let j=i+1;j<contacts.length;j++){const a=contacts[i],b=contacts[j];if(`${a.firstName} ${a.lastName}`.toLowerCase()===`${b.firstName} ${b.lastName}`.toLowerCase()&&(a.company===b.company||!a.company||!b.company))duplicates.push({a:Number(a.id),b:Number(b.id),reason:"Same name and company"});}
-  const [identity,name,brand]=await Promise.all([sendingIdentity(),displayName(account),env.DB.prepare("SELECT business_name AS businessName,from_name AS fromName,physical_address AS physicalAddress,sending_domain AS sendingDomain,logo_url AS logoUrl FROM brand_settings WHERE id=1").first<Record<string,string>>()]);
-  return { contacts, activities: activities.results, tasks: tasks.results.map((t: Record<string, unknown>) => ({ ...t, completed: Boolean(t.completed) })), campaigns: campaigns.results, segments:segmentRows, suppressions:suppressions.results, campaignEvents:campaignEvents.results, companies:companies.results,consentEvents:consentEvents.results,duplicates,customFields:customFields.results.map((field:Record<string,unknown>)=>({...field,options:JSON.parse(String(field.options||"[]"))})),customFieldValues:customValues.results,account:{...account,name},brand:{businessName:brand?.businessName||"",fromName:brand?.fromName||"",physicalAddress:brand?.physicalAddress||"",sendingDomain:brand?.sendingDomain||"",logoUrl:brand?.logoUrl||""}, integration: { connected: Boolean(resendConfigured()&&identity.fromEmail), fromEmail: identity.fromEmail?fromEmail(identity):null, webhookReady: Boolean(env.RESEND_WEBHOOK_SECRET) } };
+  const segmentRules=segments.results as SegmentRule[];
+  const [counts,summary,identity,name]=await Promise.all([segmentCounts(env.DB,segmentRules),contactSummary(env.DB),sendingIdentity(),displayName(account)]);
+  const brand=(brandRows.results as Record<string,string>[])[0];
+  return { summary, activities: activities.results, tasks: (tasks.results as Record<string,unknown>[]).map(t => ({ ...t, completed: Boolean(t.completed) })), campaigns: campaigns.results, segments:segmentRules.map((segment,index)=>({...segment,recipientCount:counts[index]})), suppressions:suppressions.results, campaignEvents:campaignEvents.results, customFields:(customFields.results as Record<string,unknown>[]).map(field=>({...field,options:JSON.parse(String(field.options||"[]"))})),account:{...account,name},brand:{businessName:brand?.businessName||"",fromName:brand?.fromName||"",physicalAddress:brand?.physicalAddress||"",sendingDomain:brand?.sendingDomain||"",logoUrl:brand?.logoUrl||""}, integration: { connected: Boolean(resendConfigured()&&identity.fromEmail), fromEmail: identity.fromEmail?fromEmail(identity):null, webhookReady: Boolean(env.RESEND_WEBHOOK_SECRET) } };
+}
+// GET ?resource=... is read-only (no writes, including no company reconciliation); the bare GET is the first-screen bootstrap.
+async function readResource(resource:string,url:URL){
+  const q=url.searchParams,id=Number(q.get("id"));
+  if(resource==="contacts")return Response.json(await listContacts(env.DB,contactQuery(q)));
+  if(resource==="contact"){if(!Number.isInteger(id)||id<1)return Response.json({error:"Choose a contact."},{status:400});const detail=await contactDetail(env.DB,id);return detail?Response.json(detail):Response.json({error:"Contact not found."},{status:404});}
+  if(resource==="companies")return Response.json(await listCompanies(env.DB,companyQuery(q)));
+  if(resource==="company"){const detail=await companyDetail(env.DB,q);return detail?Response.json(detail):Response.json({error:"Company not found."},{status:404});}
+  if(resource==="search")return Response.json(await searchRecords(env.DB,q));
+  if(resource==="mentions")return Response.json(await recordMentions(env.DB,q.get("text")));
+  if(resource==="summary")return Response.json({summary:await contactSummary(env.DB)});
+  if(resource==="campaign"){const campaign=Number.isInteger(id)&&id>0?await campaignRow(id):null;return campaign?Response.json({campaign}):Response.json({error:"Campaign not found."},{status:404});}
+  return Response.json({error:"Unknown resource."},{status:400});
 }
 async function syncCampaign(id: number) {
   const campaign = await campaignRow(id); if (!campaign) throw new Error("Campaign not found.");
@@ -86,7 +99,7 @@ async function syncCampaign(id: number) {
   return { segmentId, recipientCount: contacts.length };
 }
 
-export async function GET(request:Request) { const account=await crmUser(request);if(!account)return Response.json({error:"Sign in is required."},{status:401});if(!can(account,"records.view"))return Response.json({error:"View access is required."},{status:403});try { await maybeRunDailyMaintenance(account.email);return Response.json(await readAll(account)); } catch { return Response.json({ error: "CRM data is temporarily unavailable." }, { status:503 }); } }
+export async function GET(request:Request) { const account=await crmUser(request);if(!account)return Response.json({error:"Sign in is required."},{status:401});if(!can(account,"records.view"))return Response.json({error:"View access is required."},{status:403});try { const url=new URL(request.url),resource=url.searchParams.get("resource");if(resource)return await readResource(resource,url);await maybeRunDailyMaintenance(account.email);return Response.json(await readAll(account)); } catch { return Response.json({ error: "CRM data is temporarily unavailable." }, { status:503 }); } }
 export async function POST(request: Request) {
   try {
     const account=await crmUser(request);if(!account)return Response.json({error:"Sign in is required."},{status:401});
@@ -97,13 +110,13 @@ export async function POST(request: Request) {
     if (body.action === "createContact") {
       const firstName=clean(body.firstName), lastName=clean(body.lastName), email=clean(body.email).toLowerCase(); if (!firstName || !lastName || !email) return Response.json({error:"Name and email are required."},{status:400});
       const suppressed=await env.DB.prepare("SELECT reason FROM suppressions WHERE email=? AND removed_at IS NULL").bind(email).first<{reason:string}>();
-      const result = await env.DB.prepare("INSERT INTO contacts (first_name,last_name,email,company,title,phone,location,notes,lead_source,stage,tags,subscribed,suppression_reason,suppressed_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'),datetime('now'))").bind(firstName,lastName,email,clean(body.company),clean(body.title),clean(body.phone),clean(body.location),clean(body.notes),clean(body.leadSource,"Direct"),clean(body.stage,"Lead"),JSON.stringify(clean(body.tags).split(",").map(v=>v.trim()).filter(Boolean)),suppressed?0:1,suppressed?.reason||null,suppressed?new Date().toISOString():null).run(); return Response.json({id:result.meta.last_row_id},{status:201});
+      const result = await env.DB.prepare("INSERT INTO contacts (first_name,last_name,email,company,title,phone,location,notes,lead_source,stage,tags,subscribed,suppression_reason,suppressed_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'),datetime('now'))").bind(firstName,lastName,email,clean(body.company),clean(body.title),clean(body.phone),clean(body.location),clean(body.notes),clean(body.leadSource,"Direct"),clean(body.stage,"Lead"),JSON.stringify(clean(body.tags).split(",").map(v=>v.trim()).filter(Boolean)),suppressed?0:1,suppressed?.reason||null,suppressed?new Date().toISOString():null).run(); await reconcileCompanyNames(env.DB,[body.company]); return Response.json({id:result.meta.last_row_id},{status:201});
     }
     if(body.action==="updateContact"){
       const id=Number(body.id),email=clean(body.email).toLowerCase(),tags=clean(body.tags).split(",").map(v=>v.trim()).filter(Boolean),stage=clean(body.stage,"Lead");
       if(!id||!email)return Response.json({error:"Contact and email are required."},{status:400});
       const fieldChanges=await customFieldChanges(body,"contact",id);
-      await env.DB.batch([env.DB.prepare("UPDATE contacts SET first_name=?,last_name=?,email=?,company=?,title=?,phone=?,location=?,notes=?,lead_source=?,stage=?,tags=?,updated_at=datetime('now') WHERE id=?").bind(clean(body.firstName),clean(body.lastName),email,clean(body.company),clean(body.title),clean(body.phone),clean(body.location),clean(body.notes),clean(body.leadSource,"Direct"),stage,JSON.stringify(tags),id),...fieldChanges]);
+      await env.DB.batch([env.DB.prepare("UPDATE contacts SET first_name=?,last_name=?,email=?,company=?,title=?,phone=?,location=?,notes=?,lead_source=?,stage=?,tags=?,updated_at=datetime('now') WHERE id=?").bind(clean(body.firstName),clean(body.lastName),email,clean(body.company),clean(body.title),clean(body.phone),clean(body.location),clean(body.notes),clean(body.leadSource,"Direct"),stage,JSON.stringify(tags),id),...fieldChanges,...reconcileCompanyNamesStatements(env.DB,[body.company])]);
       const matched=await env.DB.prepare("SELECT s.id,(SELECT delay_days FROM automation_steps WHERE sequence_id=s.id ORDER BY step_order LIMIT 1) AS delayDays FROM automation_sequences s WHERE s.active=1 AND s.trigger_type='Contact stage' AND lower(s.trigger_value)=lower(?)").bind(stage).all();for(const sequence of matched.results){const exists=await env.DB.prepare("SELECT id FROM automation_enrollments WHERE sequence_id=? AND contact_id=? AND status='Active'").bind(sequence.id,id).first();if(!exists)await env.DB.prepare("INSERT INTO automation_enrollments (sequence_id,contact_id,current_step,status,next_run_at,enrolled_at) VALUES (?,?,0,'Active',datetime('now',?),datetime('now'))").bind(sequence.id,id,`+${Math.max(0,Number(sequence.delayDays)||0)} days`).run();}
       return Response.json({status:"updated"});
     }
@@ -135,25 +148,30 @@ export async function POST(request: Request) {
     }
     if(body.action==="createTask"){const contactId=Number(body.contactId),title=clean(body.title),dueDate=clean(body.dueDate),owner=clean(body.owner,await displayName(account));if(!contactId||!title||!dueDate)return Response.json({error:"Contact, task and due date are required."},{status:400});await env.DB.batch([env.DB.prepare("INSERT INTO tasks (contact_id,title,due_date,owner,status,completed) VALUES (?,?,?,?,'Open',0)").bind(contactId,title,dueDate,owner),env.DB.prepare("UPDATE contacts SET next_follow_up=? WHERE id=?").bind(dueDate,contactId)]);return Response.json({status:"created"},{status:201});}
     if(body.action==="bulkUpdateContacts"){
-      const ids=Array.isArray(body.ids)?[...new Set(body.ids.map(Number).filter(id=>Number.isInteger(id)&&id>0))]:[],stage=clean(body.stage),addTag=clean(body.addTag);
-      if(!ids.length||ids.length>500)return Response.json({error:"Select between one and 500 contacts."},{status:400});
+      // Either explicit ids (up to 500) or `filter` = the contact list filter, applied server-side to every matching contact.
+      const ids=Array.isArray(body.ids)?[...new Set(body.ids.map(Number).filter(id=>Number.isInteger(id)&&id>0))]:[],filter=body.filter&&typeof body.filter==="object"&&!Array.isArray(body.filter)?contactFilter(body.filter as Record<string,unknown>):null,stage=clean(body.stage),addTag=clean(body.addTag);
+      if(!filter&&(!ids.length||ids.length>500))return Response.json({error:"Select between one and 500 contacts."},{status:400});
       if(!stage&&!addTag)return Response.json({error:"Choose a lifecycle stage or tag to apply."},{status:400});
-      const contacts=(await env.DB.prepare(`SELECT id,tags FROM contacts WHERE id IN (${ids.map(()=>"?").join(",")})`).bind(...ids).all<Record<string,unknown>>()).results;
-      const statements=contacts.map(contact=>{let tags:string[]=[];try{const parsed=JSON.parse(String(contact.tags||"[]"));tags=Array.isArray(parsed)?parsed.map(String):[]}catch{}if(addTag&&!tags.some(tag=>tag.toLowerCase()===addTag.toLowerCase()))tags.push(addTag);return env.DB.prepare("UPDATE contacts SET stage=COALESCE(NULLIF(?,''),stage),tags=?,updated_at=datetime('now') WHERE id=?").bind(stage,JSON.stringify(tags),contact.id)});
-      if(!statements.length)return Response.json({error:"No selected contacts were found."},{status:404});
-      await env.DB.batch(statements);return Response.json({status:"updated",count:statements.length});
+      if(addTag.length>80)return Response.json({error:"Tags are limited to 80 characters."},{status:400});
+      const tagged="CASE WHEN json_valid(tags) THEN tags ELSE '[]' END",set=`UPDATE contacts SET stage=COALESCE(NULLIF(?,''),stage),tags=CASE WHEN ?='' THEN tags WHEN EXISTS(SELECT 1 FROM json_each(${tagged}) t WHERE lower(t.value)=lower(?)) THEN ${tagged} ELSE json_insert(${tagged},'$[#]',?) END,updated_at=datetime('now') WHERE `;
+      const statements=filter?[(()=>{const where=contactWhere(filter);return env.DB.prepare(`${set}id IN (SELECT c.id FROM contacts c ${where.sql})`).bind(stage,addTag,addTag,addTag,...where.binds)})()]:Array.from({length:Math.ceil(ids.length/90)},(_,index)=>ids.slice(index*90,index*90+90)).map(chunk=>env.DB.prepare(`${set}id IN (${chunk.map(()=>"?").join(",")})`).bind(stage,addTag,addTag,addTag,...chunk));
+      const count=(await env.DB.batch(statements)).reduce((sum,result)=>sum+Number(result.meta?.changes||0),0);
+      if(!count)return Response.json({error:"No selected contacts were found."},{status:404});
+      return Response.json({status:"updated",count});
+    }
+    if(body.action==="existingEmails"){
+      // Import preview: which of these addresses already exist (read-only; keeps the browser from needing every contact).
+      const emails=Array.isArray(body.emails)?[...new Set(body.emails.map(value=>clean(value).toLowerCase()).filter(Boolean))]:[];if(emails.length>5000)return Response.json({error:"Check at most 5,000 addresses at a time."},{status:400});
+      const chunks=Array.from({length:Math.ceil(emails.length/90)},(_,index)=>emails.slice(index*90,index*90+90)),results=chunks.length?await env.DB.batch(chunks.map(chunk=>env.DB.prepare(`SELECT lower(email) AS email FROM contacts WHERE lower(email) IN (${chunk.map(()=>"?").join(",")})`).bind(...chunk))):[];
+      return Response.json({existing:results.flatMap(result=>(result.results as Record<string,unknown>[]).map(row=>String(row.email)))});
     }
     if (body.action === "bulkImportContacts") {
       const contacts=Array.isArray(body.contacts)?body.contacts as Array<Record<string,unknown>>:[];if(!contacts.length||contacts.length>2000)return Response.json({error:"Import between 1 and 2,000 contacts at a time."},{status:400});
-      const existingRows=(await env.DB.prepare("SELECT * FROM contacts").all<Record<string,unknown>>()).results,existing=new Map(existingRows.map(row=>[String(row.email).toLowerCase(),row])),suppressedSet=new Set((await env.DB.prepare("SELECT email FROM suppressions WHERE removed_at IS NULL").all()).results.map((r:Record<string,unknown>)=>String(r.email).toLowerCase())),batchId=crypto.randomUUID(),created=contacts.filter(c=>!existing.has(clean(c.email).toLowerCase())).length,updated=contacts.length-created;
+      const importEmails=[...new Set(contacts.map(c=>clean(c.email).toLowerCase()).filter(Boolean))],emailChunks=Array.from({length:Math.ceil(importEmails.length/90)},(_,index)=>importEmails.slice(index*90,index*90+90)),existingRows=(emailChunks.length?await env.DB.batch(emailChunks.map(chunk=>env.DB.prepare(`SELECT * FROM contacts WHERE lower(email) IN (${chunk.map(()=>"?").join(",")})`).bind(...chunk))):[]).flatMap(result=>result.results as Record<string,unknown>[]),existing=new Map(existingRows.map(row=>[String(row.email).toLowerCase(),row])),suppressedSet=new Set((await env.DB.prepare("SELECT email FROM suppressions WHERE removed_at IS NULL").all()).results.map((r:Record<string,unknown>)=>String(r.email).toLowerCase())),batchId=crypto.randomUUID(),created=contacts.filter(c=>!existing.has(clean(c.email).toLowerCase())).length,updated=contacts.length-created;
       await env.DB.prepare("INSERT INTO import_batches(id,entity_type,filename,created_count,updated_count,status,created_by,created_at) VALUES (?,'contact',?,?,?,'Completed',?,datetime('now'))").bind(batchId,clean(body.filename,"contacts.csv"),created,updated,account.email).run();
       const prepared=contacts.flatMap(contact=>{const firstName=clean(contact.firstName),lastName=clean(contact.lastName),email=clean(contact.email).toLowerCase();if(!firstName||!lastName||!email.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/))throw new Error("INVALID_IMPORT_ROW");const tags=Array.isArray(contact.tags)?contact.tags.map(tag=>clean(tag)).filter(Boolean):[],before=existing.get(email),after={first_name:firstName,last_name:lastName,email,company:clean(contact.company),title:clean(contact.title),phone:clean(contact.phone),location:clean(contact.location),stage:clean(contact.stage,"Lead"),tags:JSON.stringify(tags),subscribed:contact.subscribed===false?0:1};return [env.DB.prepare("INSERT INTO contacts (first_name,last_name,email,company,title,phone,location,stage,tags,subscribed,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,datetime('now'),datetime('now')) ON CONFLICT(email) DO UPDATE SET first_name=excluded.first_name,last_name=excluded.last_name,company=excluded.company,title=excluded.title,phone=excluded.phone,location=excluded.location,stage=excluded.stage,tags=excluded.tags,subscribed=excluded.subscribed,resend_synced_at=NULL,updated_at=datetime('now')").bind(firstName,lastName,email,after.company,after.title,after.phone,after.location,after.stage,after.tags,after.subscribed),env.DB.prepare("INSERT INTO import_changes(batch_id,entity_type,entity_id,change_type,before_json,after_json) VALUES (?,'contact',?,?,?,?)").bind(batchId,before?String(before.id):email,before?"update":"create",before?JSON.stringify(before):null,JSON.stringify(after))]});
       for(let i=0;i<prepared.length;i+=100)await env.DB.batch(prepared.slice(i,i+100));
-      await env.DB.prepare(`INSERT INTO companies(name,updated_at)
-        SELECT MIN(trim(c.company)),datetime('now') FROM contacts c
-        WHERE trim(c.company)<>'' AND NOT EXISTS(
-          SELECT 1 FROM companies existing WHERE lower(existing.name)=lower(trim(c.company))
-        ) GROUP BY lower(trim(c.company))`).run();
+      await reconcileCompanyNames(env.DB,contacts.map(c=>c.company));
       await env.DB.prepare("UPDATE contacts SET subscribed=0,suppression_reason=COALESCE((SELECT reason FROM suppressions WHERE suppressions.email=contacts.email AND removed_at IS NULL),'Suppressed'),suppressed_at=COALESCE(suppressed_at,datetime('now')) WHERE email IN (SELECT email FROM suppressions WHERE removed_at IS NULL)").run();return Response.json({batchId,imported:contacts.length,created,updated,suppressed:contacts.filter(c=>suppressedSet.has(clean(c.email).toLowerCase())).length},{status:201});
     }
     if(body.action==="createSegment"){

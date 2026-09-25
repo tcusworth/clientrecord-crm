@@ -34,6 +34,10 @@ assert.equal(sqlite.prepare("SELECT COUNT(*) count FROM custom_field_values WHER
 const response=await GET(new Request("https://test/api/crm",{headers})),data=await response.json();
 assert.equal(response.status,200,JSON.stringify(data));
 assert.equal(data.customFields.length,3);
-assert.ok(data.customFieldValues.every(value=>value.entityType==="contact"));
+// Custom field values moved from the bootstrap to the contact detail read (GET ?resource=contact&id=).
+assert.equal(data.customFieldValues,undefined);
+const detail=await (await GET(new Request("https://test/api/crm?resource=contact&id=1",{headers}))).json();
+assert.ok(detail.customFieldValues.length>0&&detail.customFieldValues.every(value=>value.entityType==="contact"&&value.entityId===1));
+assert.ok(detail.customFieldValues.some(value=>value.definitionId===101&&value.value==="2028-01-15"));
 assert.equal(sqlite.prepare("PRAGMA foreign_key_check").all().length,0);
 console.log("PASS: scoped definitions, contact custom field save, validation scope, clearing, merge preservation, API reads, and FK integrity.");

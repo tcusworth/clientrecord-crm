@@ -40,13 +40,19 @@ export function createD1(sqlite) {
           const result = sqlite.prepare(sql).run(...this.args);
           return { meta: { last_row_id: Number(result.lastInsertRowid), changes: result.changes } };
         },
+        // Like D1's batch(): row-returning statements yield { results }, writes yield { meta }.
+        async batchResult() {
+          const statement = sqlite.prepare(sql);
+          if (statement.columns().length) return { results: statement.all(...this.args), meta: { changes: 0 } };
+          return { results: [], ...(await this.run()) };
+        },
       };
     },
     async batch(statements) {
       sqlite.exec("BEGIN");
       try {
         const results = [];
-        for (const statement of statements) results.push(await statement.run());
+        for (const statement of statements) results.push(await statement.batchResult());
         sqlite.exec("COMMIT");
         return results;
       } catch (error) {

@@ -13,7 +13,8 @@ const hoursFromNow = (hours: number) => new Date(Date.now() + hours * 3600000).t
 
 async function platformData(userEmail: string) {
   await env.DB.prepare("UPDATE service_cases SET status='Escalated',escalated_at=COALESCE(escalated_at,datetime('now')),escalation_reason=CASE WHEN escalation_reason='' THEN 'SLA breached' ELSE escalation_reason END,updated_at=datetime('now') WHERE status NOT IN ('Resolved','Closed','Escalated') AND resolution_due_at IS NOT NULL AND datetime(resolution_due_at)<datetime('now')").run();
-  const [partners, partnerContacts, referrals, payouts, competitors, competitorDeals, cases, notes, articles, portalAccess, captures, companies, contacts, deals] = await Promise.all([
+  // Contacts and companies are picked with server-side search (GET /api/crm?resource=search); only the small deal list ships here.
+  const [partners, partnerContacts, referrals, payouts, competitors, competitorDeals, cases, notes, articles, portalAccess, captures, deals] = await Promise.all([
     rows("SELECT p.*,c.name AS crm_company_name,(SELECT count(*) FROM partner_contacts pc WHERE pc.partner_company_id=p.id) AS contact_count,(SELECT count(*) FROM partner_referrals pr WHERE pr.partner_company_id=p.id) AS referral_count FROM partner_companies p LEFT JOIN companies c ON c.id=p.company_id ORDER BY p.name"),
     rows("SELECT pc.*,p.name AS partner_name FROM partner_contacts pc JOIN partner_companies p ON p.id=pc.partner_company_id ORDER BY p.name,pc.first_name,pc.last_name"),
     rows("SELECT r.*,p.name AS partner_name,d.name AS deal_name,d.stage AS deal_stage,d.status AS deal_status FROM partner_referrals r JOIN partner_companies p ON p.id=r.partner_company_id LEFT JOIN deals d ON d.id=r.deal_id ORDER BY r.submitted_at DESC"),
@@ -25,12 +26,10 @@ async function platformData(userEmail: string) {
     rows("SELECT * FROM knowledge_articles ORDER BY CASE status WHEN 'Published' THEN 0 ELSE 1 END,updated_at DESC"),
     rows("SELECT pa.id,pa.company_id,pa.contact_id,pa.status,pa.permissions_json,pa.expires_at,pa.last_used_at,pa.created_at,co.name AS company_name,c.first_name||' '||c.last_name AS contact_name,c.email FROM customer_portal_access pa JOIN companies co ON co.id=pa.company_id JOIN contacts c ON c.id=pa.contact_id ORDER BY pa.created_at DESC"),
     rows("SELECT fc.*,c.first_name||' '||c.last_name AS contact_name,co.name AS company_name FROM field_captures fc LEFT JOIN contacts c ON c.id=fc.contact_id LEFT JOIN companies co ON co.id=fc.company_id WHERE lower(fc.captured_by)=lower(?) ORDER BY fc.captured_at DESC LIMIT 100", userEmail),
-    rows("SELECT id,name,owner,stage FROM companies ORDER BY name LIMIT 1000"),
-    rows("SELECT id,first_name||' '||last_name AS name,email,company FROM contacts ORDER BY first_name,last_name LIMIT 1500"),
     rows("SELECT id,name,company,value,stage,status,partner FROM deals ORDER BY updated_at DESC LIMIT 1000"),
   ]);
   const openCases = cases.filter(item => !["Resolved", "Closed"].includes(String(item.status)));
-  return { account:{email:userEmail}, partners, partnerContacts, referrals, payouts, competitors, competitorDeals, cases, caseNotes:notes, articles, portalAccess, captures, companies, contacts, deals, serviceSummary:{open:openCases.length,breached:openCases.filter(item=>String(item.status)==="Escalated").length,unassigned:openCases.filter(item=>!String(item.owner)).length} };
+  return { account:{email:userEmail}, partners, partnerContacts, referrals, payouts, competitors, competitorDeals, cases, caseNotes:notes, articles, portalAccess, captures, deals, serviceSummary:{open:openCases.length,breached:openCases.filter(item=>String(item.status)==="Escalated").length,unassigned:openCases.filter(item=>!String(item.owner)).length} };
 }
 
 export async function GET(request: Request) {
