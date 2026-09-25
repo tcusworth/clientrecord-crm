@@ -7,6 +7,7 @@ type Row=Record<string,unknown>;
 type Attendee={name:string;email:string;role:string};
 type CanonicalMeeting={eventType:string;externalId:string;title:string;startsAt:string;endsAt:string|null;summary:string;transcript:string;decisions:string[];customerCommitments:string[];internalCommitments:string[];risksAndObjections:string[];nextSteps:Array<{text:string;owner:string;dueDate:string|null}>;attendees:Attendee[];dealId:number|null;companyName:string;companyDomain:string};
 
+const EMAIL_CHUNK=50;
 const clean=(value:unknown,max=12000)=>String(value??"").trim().slice(0,max);
 const list=(value:unknown,max=50)=>Array.isArray(value)?value.map(item=>typeof item==="object"&&item?clean((item as Row).text||(item as Row).title||(item as Row).description,2000):clean(item,2000)).filter(Boolean).slice(0,max):clean(value).split(/\r?\n/).map(item=>item.replace(/^[-*]\s*/,"").trim()).filter(Boolean).slice(0,max);
 const date=(value:unknown,fallback:string)=>{const parsed=new Date(clean(value,80));return Number.isFinite(parsed.getTime())?parsed.toISOString():fallback};
@@ -33,7 +34,8 @@ function normalize(body:Row):CanonicalMeeting{
 async function matchedDeal(payload:CanonicalMeeting){
   if(payload.dealId&&await one("SELECT id FROM deals WHERE id=?",payload.dealId))return payload.dealId;
   const emails=payload.attendees.map(item=>item.email).filter(Boolean);
-  if(emails.length){const placeholders=emails.map(()=>"?").join(","),matches=await rows(`SELECT DISTINCT d.id FROM deals d LEFT JOIN contacts primary_contact ON primary_contact.id=d.contact_id LEFT JOIN deal_stakeholders s ON s.deal_id=d.id AND s.active=1 LEFT JOIN contacts stakeholder ON stakeholder.id=s.contact_id WHERE d.status='Open' AND (lower(primary_contact.email) IN (${placeholders}) OR lower(stakeholder.email) IN (${placeholders}))`,...emails,...emails);if(matches.length===1)return Number(matches[0].id)}
+  // Each email binds twice; chunk so a statement never exceeds D1's 100 bound parameters.
+  if(emails.length){const matches=new Set<number>();for(let i=0;i<emails.length;i+=EMAIL_CHUNK){const chunk=emails.slice(i,i+EMAIL_CHUNK),placeholders=chunk.map(()=>"?").join(",");for(const row of await rows(`SELECT DISTINCT d.id FROM deals d LEFT JOIN contacts primary_contact ON primary_contact.id=d.contact_id LEFT JOIN deal_stakeholders s ON s.deal_id=d.id AND s.active=1 LEFT JOIN contacts stakeholder ON stakeholder.id=s.contact_id WHERE d.status='Open' AND (lower(primary_contact.email) IN (${placeholders}) OR lower(stakeholder.email) IN (${placeholders}))`,...chunk,...chunk))matches.add(Number(row.id))}if(matches.size===1)return [...matches][0]}
   if(payload.companyDomain){const matches=await rows("SELECT DISTINCT d.id FROM deals d JOIN companies c ON c.id=d.company_id WHERE d.status='Open' AND lower(c.domain)=lower(?)",payload.companyDomain);if(matches.length===1)return Number(matches[0].id)}
   if(payload.companyName){const matches=await rows("SELECT DISTINCT d.id FROM deals d LEFT JOIN companies c ON c.id=d.company_id WHERE d.status='Open' AND (lower(c.name)=lower(?) OR lower(d.company)=lower(?))",payload.companyName,payload.companyName);if(matches.length===1)return Number(matches[0].id)}
   return null;

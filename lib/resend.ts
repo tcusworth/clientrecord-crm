@@ -63,7 +63,7 @@ export async function verifyResendWebhook(payload: string, headers: Headers) {
   const key = await crypto.subtle.importKey("raw", decodeSecret(env.RESEND_WEBHOOK_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   const signed = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${id}.${timestamp}.${payload}`));
   const expected = btoa(String.fromCharCode(...new Uint8Array(signed)));
-  return signature.split(" ").some(part => part === `v1,${expected}`);
+  return signature.split(" ").map(part => constantTimeEqual(part, `v1,${expected}`)).includes(true);
 }
 
 // Signed manual-unsubscribe links. HMAC-SHA256 keyed off CRM_TOKEN_ENCRYPTION_KEY with a purpose prefix so the
@@ -86,7 +86,11 @@ export async function unsubscribeUrl(email: string, origin: string) {
 
 export async function verifyUnsubscribeToken(email: string, token: string) {
   if (!env.CRM_TOKEN_ENCRYPTION_KEY || !email || !token) return false;
-  const expected = new TextEncoder().encode(await unsubscribeToken(email)), actual = new TextEncoder().encode(token);
+  return constantTimeEqual(token, await unsubscribeToken(email));
+}
+
+function constantTimeEqual(actualValue: string, expectedValue: string) {
+  const expected = new TextEncoder().encode(expectedValue), actual = new TextEncoder().encode(actualValue);
   let diff = expected.length ^ actual.length;
   for (let i = 0; i < expected.length; i++) diff |= expected[i] ^ (actual[i] ?? 0);
   return diff === 0;

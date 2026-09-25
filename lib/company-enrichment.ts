@@ -68,7 +68,8 @@ function inferIndustry(content:string){
 async function fetchHtml(startUrl:string){
   let current=startUrl;
   for(let redirects=0;redirects<4;redirects++){
-    const parsed=new URL(current),domain=normalizedCompanyDomain(parsed.hostname);if(!domain)throw new Error("The company website address is not safe to request.");
+    // Only default web ports; DNS resolving a public name to a private IP isn't checked here (Workers can't reach private networks).
+    const parsed=new URL(current),domain=normalizedCompanyDomain(parsed.hostname);if(!domain||!["http:","https:"].includes(parsed.protocol)||!["","80","443"].includes(parsed.port))throw new Error("The company website address is not safe to request.");
     const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),9000);
     let response:Response;
     try{response=await fetch(parsed.toString(),{redirect:"manual",signal:controller.signal,headers:{accept:"text/html,application/xhtml+xml","user-agent":"ClientRecordCRM-Enrichment/1.0"}})}finally{clearTimeout(timer)}
