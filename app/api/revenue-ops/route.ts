@@ -9,18 +9,16 @@ const rows=async(sql:string,...args:(string|number|null)[])=>(await env.DB.prepa
 
 export async function GET(request:Request){
  const user=await crmUser(request);if(!user)return Response.json({error:"Sign in is required."},{status:401});if(!can(user,"records.view"))return Response.json({error:"View access is required."},{status:403});
- const [leads,messages,contacts,companies,deals,incomplete,duplicates,proposals,brand]=await Promise.all([
+ const [leads,messages,deals,incomplete,duplicates,proposals,brand]=await Promise.all([
   rows("SELECT l.*,c.first_name||' '||c.last_name AS contact_name,co.name AS matched_company,t.title AS task_title FROM lead_intakes l LEFT JOIN contacts c ON c.id=l.contact_id LEFT JOIN companies co ON co.id=l.company_id LEFT JOIN tasks t ON t.id=l.task_id ORDER BY l.received_at DESC LIMIT 150"),
   rows("SELECT m.*,c.first_name||' '||c.last_name AS contact_name,co.name AS company_name,d.name AS deal_name FROM inbox_messages m LEFT JOIN contacts c ON c.id=m.contact_id LEFT JOIN companies co ON co.id=m.company_id LEFT JOIN deals d ON d.id=m.deal_id ORDER BY m.occurred_at DESC LIMIT 150"),
-  rows("SELECT id,first_name||' '||last_name AS name,email,company,title FROM contacts ORDER BY first_name,last_name LIMIT 500"),
-  rows("SELECT id,name,domain,website,owner,industry,territory FROM companies ORDER BY name LIMIT 500"),
   rows("SELECT id,name,company,company_id AS companyId,contact_id AS contactId,stage,owner FROM deals WHERE status='Open' ORDER BY updated_at DESC LIMIT 500"),
   rows("SELECT 'Company' AS kind,id,name,website,domain,owner,industry FROM companies WHERE trim(website)='' OR trim(domain)='' OR trim(owner)='' OR trim(industry)='' ORDER BY updated_at DESC LIMIT 120"),
   rows("SELECT a.id AS aId,a.name AS aName,a.domain AS domain,b.id AS bId,b.name AS bName FROM companies a JOIN companies b ON a.id<b.id AND ((a.domain<>'' AND lower(a.domain)=lower(b.domain)) OR lower(a.name)=lower(b.name)) ORDER BY a.name LIMIT 120"),
   rows("SELECT p.id,p.deal_id AS dealId,p.title,p.amount,p.status,p.valid_until AS validUntil,p.sent_at AS sentAt,p.opened_at AS openedAt,p.accepted_at AS acceptedAt,p.accepted_by AS acceptedBy,p.body_markdown AS bodyMarkdown,d.name AS dealName,d.company FROM deal_proposals p JOIN deals d ON d.id=p.deal_id ORDER BY p.updated_at DESC LIMIT 100"),
   rows("SELECT business_name AS businessName,logo_url AS logoUrl,physical_address AS physicalAddress FROM brand_settings WHERE id=1"),
  ]);
- return Response.json({account:{email:user.email,role:user.role},leads,messages,contacts,companies,deals,incomplete,duplicates,proposals,brand:brand[0]||{businessName:"ClientRecord",logoUrl:"",physicalAddress:""},endpoints:{leadCapture:`${new URL(request.url).origin}/api/lead-capture`,inboxCapture:`${new URL(request.url).origin}/api/inbox-capture`}});
+ return Response.json({account:{email:user.email,role:user.role},leads,messages,deals,incomplete,duplicates,proposals,brand:brand[0]||{businessName:"ClientRecord",logoUrl:"",physicalAddress:""},endpoints:{leadCapture:`${new URL(request.url).origin}/api/lead-capture`,inboxCapture:`${new URL(request.url).origin}/api/inbox-capture`}});
 }
 
 export async function POST(request:Request){

@@ -20,14 +20,15 @@ async function messageDocuments(user:CRMUser,ids:string[]){
 
 async function inboxData(user:CRMUser){
  await env.DB.prepare("UPDATE inbox_messages SET status='Overdue',updated_at=datetime('now') WHERE direction='Inbound' AND status NOT IN ('Resolved','Overdue') AND response_due_at IS NOT NULL AND datetime(response_due_at)<datetime('now')").run();
- const [messages,contacts,companies,deals,documents,identity]=await Promise.all([
+ // Contacts/companies are chosen with server-side search pickers (GET /api/crm?resource=search) rather than shipped here.
+ const [messages,deals,documents,identity]=await Promise.all([
   rows("SELECT m.*,c.first_name||' '||c.last_name AS contact_name,c.email AS contact_email,co.name AS company_name,d.name AS deal_name FROM inbox_messages m LEFT JOIN contacts c ON c.id=m.contact_id LEFT JOIN companies co ON co.id=m.company_id LEFT JOIN deals d ON d.id=m.deal_id ORDER BY COALESCE(m.thread_key,m.id),m.occurred_at DESC LIMIT 400"),
-  rows("SELECT id,first_name||' '||last_name AS name,email,company FROM contacts ORDER BY first_name,last_name LIMIT 1000"),rows("SELECT id,name,owner FROM companies ORDER BY name LIMIT 800"),rows("SELECT id,name,company,company_id AS companyId,contact_id AS contactId,owner FROM deals WHERE status='Open' ORDER BY updated_at DESC LIMIT 800"),
+  rows("SELECT id,name,company,company_id AS companyId,contact_id AS contactId,owner FROM deals WHERE status='Open' ORDER BY updated_at DESC LIMIT 800"),
   rows("SELECT d.id,d.title,d.category,v.filename,d.company_id AS companyId,d.contact_id AS contactId,d.deal_id AS dealId FROM client_documents d JOIN document_versions v ON v.document_id=d.id AND v.version=d.latest_version WHERE d.status='Active' AND (?=1 OR d.sensitive=0) AND ?=1 ORDER BY d.updated_at DESC LIMIT 800",can(user,"documents.manage_sensitive")?1:0,can(user,"documents.view")?1:0),
   env.DB.prepare("SELECT from_name AS fromName,from_email AS fromEmail,reply_to_email AS replyToEmail FROM brand_settings WHERE id=1").first<Row>(),
  ]);
  const overdue=messages.filter(message=>String(message.direction)==="Inbound"&&String(message.status)==="Overdue").length;
- return {messages,contacts,companies,deals,documents,overdue,identity:{fromName:String(identity?.fromName||""),fromEmail:String(identity?.fromEmail||""),replyToEmail:String(identity?.replyToEmail||"")},account:{email:user.email}};
+ return {messages,deals,documents,overdue,identity:{fromName:String(identity?.fromName||""),fromEmail:String(identity?.fromEmail||""),replyToEmail:String(identity?.replyToEmail||"")},account:{email:user.email}};
 }
 
 export async function GET(request:Request){const user=await crmUser(request);if(!user)return Response.json({error:"Sign in is required."},{status:401});if(!can(user,"records.view"))return Response.json({error:"View access is required."},{status:403});try{return Response.json(await inboxData(user))}catch(error){console.error(error);return Response.json({error:"Shared inbox could not load."},{status:503})}}

@@ -55,16 +55,11 @@ export async function GET(request:Request){
         ORDER BY date DESC LIMIT 150`,accountId,accountId,accountId,accountId,accountId,accountId,accountId,accountId);
       return Response.json({timeline});
     }
-    await db().prepare(`INSERT INTO companies(name,updated_at)
-      SELECT MIN(trim(c.company)),datetime('now') FROM contacts c
-      WHERE trim(c.company)<>'' AND NOT EXISTS(
-        SELECT 1 FROM companies existing WHERE lower(existing.name)=lower(trim(c.company))
-      ) GROUP BY lower(trim(c.company))`).run();
-    const [companies,contacts,stakeholders,deals,tasks,history,signals,alerts,pipe,customFields,customValues]=await Promise.all([
-      rows("SELECT * FROM companies ORDER BY name"),
-      rows("SELECT id,first_name||' '||last_name AS name,email,company,title FROM contacts ORDER BY first_name,last_name"),
+    // Read-only: companies are reconciled from contact company names on contact writes (lib/crm-records.ts), not here.
+    // Companies/contacts are paged or searched via GET /api/crm?resource=companies|company|search instead of shipped in bulk.
+    const [stakeholders,deals,tasks,history,signals,alerts,pipe,customFields,customValues]=await Promise.all([
       rows("SELECT * FROM account_stakeholders"),
-      rows("SELECT * FROM deals ORDER BY updated_at DESC"),
+      rows("SELECT d.*,CASE WHEN d.company_id IS NULL AND trim(d.company)<>'' THEN (SELECT c.id FROM companies c WHERE lower(c.name)=lower(trim(d.company)) LIMIT 1) END AS resolved_company_id FROM deals d ORDER BY d.updated_at DESC"),
       rows("SELECT * FROM deal_tasks ORDER BY completed,due_date"),
       rows("SELECT * FROM deal_stage_history ORDER BY happened_at DESC LIMIT 500"),
       rows("SELECT * FROM account_signals ORDER BY occurred_at DESC"),
@@ -73,7 +68,7 @@ export async function GET(request:Request){
       rows("SELECT id,entity_type AS entityType,name,field_key AS fieldKey,field_type AS fieldType,options FROM custom_field_definitions WHERE entity_type='company' ORDER BY name"),
       rows("SELECT definition_id AS definitionId,entity_type AS entityType,entity_id AS entityId,value FROM custom_field_values WHERE entity_type='company'"),
     ]);
-    return Response.json({user,companies,contacts,stakeholders,deals:deals.map(d=>({...d,status:!d.stage_key&&["Won","Lost"].includes(String(d.stage))?d.stage:d.status})),tasks,history,signals,alerts,pipelines:pipe,customFields:customFields.map(field=>({...field,options:JSON.parse(String(field.options||"[]"))})),customFieldValues:customValues,signalPoints,relationshipRoles,apolloConfigured:Boolean(String(env.APOLLO_API_KEY||"").trim())});
+    return Response.json({user,stakeholders,deals:deals.map(d=>({...d,status:!d.stage_key&&["Won","Lost"].includes(String(d.stage))?d.stage:d.status})),tasks,history,signals,alerts,pipelines:pipe,customFields:customFields.map(field=>({...field,options:JSON.parse(String(field.options||"[]"))})),customFieldValues:customValues,signalPoints,relationshipRoles,apolloConfigured:Boolean(String(env.APOLLO_API_KEY||"").trim())});
   }catch(error){console.error(error);return Response.json({error:"Sales foundation could not load."},{status:503});}
 }
 export async function POST(request:Request){
