@@ -13,6 +13,7 @@ import {
   type EvidenceSource,
 } from "@/lib/ai-record-fields";
 import { audit, can, crmUser, type CRMUser } from "@/lib/crm-auth";
+import { withoutShareToken } from "@/lib/proposals";
 
 type Row = Record<string, unknown>;
 const clean = (value: unknown, max = 4000) =>
@@ -452,7 +453,7 @@ async function context(type: AIEntityType, id: number) {
     rows(
       "SELECT * FROM deal_proposals WHERE deal_id=? ORDER BY updated_at DESC",
       id,
-    ),
+    ).then((list) => list.map(withoutShareToken)),
     rows(
       "SELECT * FROM deal_reviews WHERE deal_id=? ORDER BY requested_at DESC",
       id,

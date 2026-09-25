@@ -1,11 +1,11 @@
 import { env } from "cloudflare:workers";
 import { audit, can, crmUser } from "@/lib/crm-auth";
+import { documentContentTypes as contentTypes, inlinePreviewTypes, safeContentType } from "@/lib/client-documents";
 
 type Row=Record<string,unknown>;
 const clean=(value:unknown,max=500)=>String(value??"").trim().slice(0,max);
 const documentCategories=["Proposal","Contract","NDA","Scope","Presentation","Correspondence","Quote","Technical","Other"];
 const safeFilename=(name:string)=>name.replace(/[^a-zA-Z0-9._ -]/g,"_").slice(0,180)||"document";
-const contentTypes=new Set(["application/pdf","image/png","image/jpeg","image/webp","text/plain","text/csv","application/vnd.openxmlformats-officedocument.wordprocessingml.document","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet","application/vnd.openxmlformats-officedocument.presentationml.presentation"]);
 async function digest(buffer:ArrayBuffer){const hash=await crypto.subtle.digest("SHA-256",buffer);return Array.from(new Uint8Array(hash)).map(v=>v.toString(16).padStart(2,"0")).join("")}
 async function auth(request:Request,permission:"documents.view"|"documents.upload"|"records.delete"="documents.view"){
   const user=await crmUser(request);if(!user)return {response:Response.json({error:"Sign in is required."},{status:401}),user:null};
@@ -14,7 +14,8 @@ async function auth(request:Request,permission:"documents.view"|"documents.uploa
 }
 async function record(id:string){return env.DB.prepare(`SELECT d.*,v.id AS version_id,v.filename,v.content_type,v.size,v.object_key,v.checksum,v.uploaded_by,v.uploaded_at
   FROM client_documents d JOIN document_versions v ON v.document_id=d.id AND v.version=d.latest_version WHERE d.id=?`).bind(id).first<Row>()}
-function headers(filename:string,type:string,inline:boolean){const disposition=`${inline?"inline":"attachment"}; filename="${safeFilename(filename).replaceAll('"',"")}"`;return {"content-type":type||"application/octet-stream","content-disposition":disposition,"x-content-type-options":"nosniff","cache-control":"private, no-store"}}
+// Inline PDFs skip the CSP because some browsers' built-in PDF viewers break under it; PDFs cannot run page script on this origin.
+function headers(filename:string,type:string,inline:boolean){const disposition=`${inline?"inline":"attachment"}; filename="${safeFilename(filename).replaceAll('"',"")}"`;return {"content-type":type||"application/octet-stream","content-disposition":disposition,"x-content-type-options":"nosniff","cache-control":"private, no-store",...(inline&&type==="application/pdf"?{}:{"content-security-policy":"default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox"})}}
 
 export async function GET(request:Request){
   const access=await auth(request);if(!access.user)return access.response;const url=new URL(request.url),documentId=clean(url.searchParams.get("id"),80);
@@ -27,7 +28,7 @@ export async function GET(request:Request){
       }
       const version=Number(url.searchParams.get("version"))||Number(doc.latest_version),row=version===Number(doc.latest_version)?doc:await env.DB.prepare("SELECT d.sensitive,v.* FROM client_documents d JOIN document_versions v ON v.document_id=d.id WHERE d.id=? AND v.version=?").bind(documentId,version).first<Row>();if(!row)return Response.json({error:"Document version not found."},{status:404});
       const object=await env.BUCKET.get(String(row.object_key));if(!object)return Response.json({error:"Stored file is unavailable."},{status:404});
-      const type=String(row.content_type||"application/octet-stream"),preview=url.searchParams.get("preview")==="1"&&(type==="application/pdf"||type.startsWith("image/")||type.startsWith("text/"));return new Response(object.body,{headers:headers(String(row.filename),type,preview)});
+      const type=safeContentType(row.content_type),preview=url.searchParams.get("preview")==="1"&&inlinePreviewTypes.has(type);return new Response(object.body,{headers:headers(String(row.filename),type,preview)});
     }
     const sensitive=can(access.user,"documents.manage_sensitive")?1:0,entityType=clean(url.searchParams.get("entityType"),20),entityId=Number(url.searchParams.get("entityId"))||0,archived=url.searchParams.get("archived")==="1";
     let predicate="(?=1 OR d.sensitive=0) AND d.status=?",args:(string|number|null)[]=[sensitive,archived?"Archived":"Active"];

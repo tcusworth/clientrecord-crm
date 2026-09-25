@@ -5,6 +5,7 @@ import { defaultPipeline, type Stage } from "@/lib/sales-rules";
 import { calculateStakeholderCoverage, dealStakeholderRoles } from "@/lib/stakeholder-coverage";
 import { generateRecommendationCandidates, type RecommendationCandidate } from "@/lib/next-best-action";
 import { buildMeetingPreparationBrief } from "@/lib/meeting-intelligence";
+import { withoutShareToken } from "@/lib/proposals";
 
 type Row=Record<string,unknown>;
 const text=(value:unknown,max=4000)=>String(value??"").trim().slice(0,max);
@@ -106,7 +107,7 @@ async function prepareMeetingBrief(dealId:number,meetingKey:string,userEmail:str
     rows("SELECT * FROM deal_line_items WHERE deal_id=?",dealId),
     rows("SELECT * FROM deal_insights WHERE deal_id=? AND status!='Resolved' ORDER BY CASE severity WHEN 'High' THEN 1 WHEN 'Medium' THEN 2 ELSE 3 END,updated_at DESC LIMIT 30",dealId),
     rows("SELECT * FROM deal_reviews WHERE deal_id=? ORDER BY requested_at DESC LIMIT 20",dealId),
-    rows("SELECT * FROM deal_proposals WHERE deal_id=? ORDER BY created_at DESC LIMIT 20",dealId),
+    rows("SELECT * FROM deal_proposals WHERE deal_id=? ORDER BY created_at DESC LIMIT 20",dealId).then(list=>list.map(withoutShareToken)),
     rows("SELECT * FROM deal_meetings WHERE deal_id=? ORDER BY starts_at DESC LIMIT 20",dealId),
     meeting?rows("SELECT a.*,c.first_name||' '||c.last_name AS contact_name,c.title AS contact_title FROM deal_meeting_attendees a LEFT JOIN contacts c ON c.id=a.contact_id WHERE a.meeting_id=? ORDER BY a.id",String(meeting.id)):Promise.resolve([]),
   ]);
@@ -165,7 +166,7 @@ export async function GET(request:Request){
       rows("SELECT *,quantity*unit_price*(100-discount_percent)/100 AS total FROM deal_line_items WHERE deal_id=? ORDER BY id",dealId),
       rows("SELECT * FROM deal_insights WHERE deal_id=? ORDER BY CASE severity WHEN 'High' THEN 1 WHEN 'Medium' THEN 2 ELSE 3 END,created_at DESC",dealId),
       rows("SELECT * FROM deal_reviews WHERE deal_id=? ORDER BY requested_at DESC",dealId),
-      rows("SELECT * FROM deal_proposals WHERE deal_id=? ORDER BY created_at DESC",dealId),
+      rows("SELECT * FROM deal_proposals WHERE deal_id=? ORDER BY created_at DESC",dealId).then(list=>list.map(withoutShareToken)),
       rows(`SELECT d.*,v.filename,v.content_type,v.size,v.uploaded_at,v.uploaded_by
         FROM client_documents d JOIN document_versions v ON v.document_id=d.id AND v.version=d.latest_version
         WHERE d.deal_id=? AND d.status='Active' AND (?=1 OR d.sensitive=0) ORDER BY d.updated_at DESC`,dealId,can(user,"documents.manage_sensitive")?1:0),
