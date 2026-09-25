@@ -94,7 +94,7 @@ Machine clients use scoped API keys (`Authorization: Bearer cr_live_…`), creat
      node scripts/export-from-live.mjs --url https://clientrecordcrm.com --out ./migration-export
    ```
 
-   This writes `tables/<name>.json` (the import source of truth), `csv/<name>.csv` (for people), `manifest.json`, `objects/<key>` and `export-info.json`. It exits non-zero if any object is missing or fails its SHA-256 checksum. Keep the directory private; it holds all CRM data.
+   This writes `tables/<name>.json` (the import source of truth), `csv/<name>.csv` (for people), `manifest.json`, `objects/<key>` and `export-info.json`. It exits non-zero if any object is missing or fails its SHA-256 checksum. Keep the directory private: it holds all CRM data, including every proposal's live share link token (anyone with a token can open and sign that proposal). Don't sync it to cloud storage, and delete it once the import is verified. Share tokens are kept on purpose so links already sent to clients keep working; if the folder may have been exposed, regenerate links for unsigned proposals after the move.
 4. **Prepare the target.** Create the D1 database `clientrecord-crm-db` and the R2 bucket `clientrecord-crm-files`, then apply every `drizzle/*.sql` migration to the database.
 5. **Import** (`--local` or `--remote` is required; `--dry-run` only writes the SQL and prints the plan):
 
