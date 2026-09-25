@@ -17,5 +17,9 @@ declare namespace Cloudflare {
     GOOGLE_CLIENT_SECRET?: string;
     OPENAI_API_KEY?: string;
     APOLLO_API_KEY?: string;
+    QUICKBOOKS_CLIENT_ID?: string;
+    QUICKBOOKS_CLIENT_SECRET?: string;
+    QUICKBOOKS_ENVIRONMENT?: string;
+    QUICKBOOKS_DEFAULT_ITEM_ID?: string;
   }
 }

@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
-import { assertAiRunAllowed, beginAiRun, completeAiRun, failAiRun, loadAiSettings, providerConfigured } from "@/lib/ai-governance";
-import { audit, can, crmUser, sha256, type CRMUser } from "@/lib/crm-auth";
+import { loadAiSettings, providerConfigured } from "@/lib/ai-governance";
+import { aiMode, runAiArtifact } from "@/lib/ai-runner";
+import { audit, can, crmUser, type CRMUser } from "@/lib/crm-auth";
 import { buildDeterministicFollowUpDraft, followUpDraftSchema, normalizeFollowUpDraft, type FollowUpDraft } from "@/lib/follow-up-drafts";
 
 type Row=Record<string,unknown>;
@@ -42,41 +43,20 @@ async function selectedSource(id:number,type:SourceType,sourceId:string,user:CRM
   return {source,label:clean(source.title,240)||clean(source.filename,240)||"Transcript",transcriptText};
 }
 
-function outputText(response:Row){
-  if(typeof response.output_text==="string")return response.output_text;
-  const output=Array.isArray(response.output)?response.output:[];return output.flatMap(item=>{const row=item as Row;return Array.isArray(row.content)?row.content:[]}).map(item=>{const row=item as Row;return row.type==="output_text"?clean(row.text,30000):""}).join("");
-}
-
-async function modelDraft(input:string,settings:Row,prompt:Row|null){
-  const key=clean((env as unknown as Record<string,unknown>).OPENAI_API_KEY,1000),system=clean(prompt?.system_prompt,30000)||"Create a concise, professional B2B follow-up draft using only the supplied ClientRecord CRM evidence. Never invent decisions, commitments, owners, or due dates. Use an empty string or data gap when evidence is missing. The user will review this draft; do not claim it was sent.";
-  const response=await fetch("https://api.openai.com/v1/responses",{method:"POST",headers:{authorization:`Bearer ${key}`,"content-type":"application/json"},body:JSON.stringify({model:String(settings.model),input:[{role:"system",content:system},{role:"user",content:input}],max_output_tokens:2200,text:{format:{type:"json_schema",name:"clientrecord_follow_up_draft",strict:true,schema:followUpDraftSchema}}})});
-  const payload=await response.json() as Row;if(!response.ok)throw new Error(clean((payload.error as Row|undefined)?.message,1200)||`AI provider returned ${response.status}.`);const text=outputText(payload);if(!text)throw new Error("The AI provider returned no draft.");return normalizeFollowUpDraft(JSON.parse(text));
-}
-
 async function generate(id:number,type:SourceType,sourceId:string,user:CRMUser,force:boolean){
-  const settings=await loadAiSettings(),context=await dealContext(id),selected=await selectedSource(id,type,sourceId,user,Boolean(settings.allowSensitiveSources),Number(settings.maxContextChars)),prompt=await one("SELECT * FROM ai_prompt_versions WHERE feature='follow-up-draft' AND status='Active' ORDER BY version DESC LIMIT 1"),entityId=`${id}:${type}:${sourceId}`;
+  const settings=await loadAiSettings(),context=await dealContext(id),selected=await selectedSource(id,type,sourceId,user,Boolean(settings.allowSensitiveSources),Number(settings.maxContextChars)),entityId=`${id}:${type}:${sourceId}`;
   const sourceGroups=[
     {type,id:sourceId,updatedAt:clean(selected.source.updated_at||selected.source.uploaded_at||selected.source.created_at),value:{...selected.source,transcriptText:selected.transcriptText},excerpt:selected.label},
     {type:"deal",id:String(id),updatedAt:clean(context.deal.updated_at),value:context.deal,excerpt:`${clean(context.deal.name,240)} · ${clean(context.deal.stage,120)} · ${clean(context.deal.next_step,240)}`},
     ...(context.company?[{type:"company",id:String(context.company.id),updatedAt:clean(context.company.updated_at),value:context.company,excerpt:clean(context.company.name,240)}]:[]),
     {type:"stakeholders",id:context.stakeholders.map(item=>item.id).join(",")||"none",updatedAt:clean(context.stakeholders[0]?.updated_at||context.deal.updated_at),value:context.stakeholders,excerpt:context.stakeholders.map(item=>`${clean(item.contact_name,120)} (${clean(item.role,80)})`).join(", ")},
   ];
-  const input=JSON.stringify({instruction:"Draft a human-reviewed follow-up. Use only these records.",sourceType:type,sourceLabel:selected.label,deal:context.deal,company:context.company,stakeholders:context.stakeholders,selectedSource:selected.source,transcriptText:selected.transcriptText}).slice(0,Number(settings.maxContextChars)),hashInput=JSON.stringify({input,promptVersion:Number(prompt?.version||1),model:settings.enabled?settings.model:"follow-up-rules-v1"}),inputHash=await sha256(hashInput);
-  if(!force){const cached=await one("SELECT a.*,(SELECT count(*) FROM ai_artifact_sources s WHERE s.artifact_id=a.id) AS source_count FROM ai_artifacts a WHERE a.feature='follow-up-draft' AND a.entity_type='deal' AND a.entity_id=? AND a.input_hash=? AND a.review_status!='Rejected' ORDER BY a.generated_at DESC LIMIT 1",entityId,inputHash);if(cached)return {artifact:artifact(cached),cached:true,mode:String(cached.provider)==="openai"?"Model-backed":"Source-backed"}}
-  let draft:FollowUpDraft,run:null|{id:string;startedAt:number}=null,provider="clientrecord",model="follow-up-rules-v1";
-  if(Boolean(settings.enabled)&&providerConfigured()){
-    const allowed=await assertAiRunAllowed(user);provider=String(allowed.provider);model=String(allowed.model);run=await beginAiRun({feature:"follow-up-draft",entityType:"deal",entityId,requestedBy:user.email,provider,model,promptVersion:Number(prompt?.version||1),sourceCount:sourceGroups.length,input:hashInput});
-    try{draft=await modelDraft(input,allowed,prompt);await completeAiRun(run,JSON.stringify(draft))}catch(error){await failAiRun(run,error);throw error}
-  }else draft=buildDeterministicFollowUpDraft({sourceType:type,source:selected.source,deal:context.deal,company:context.company,stakeholders:context.stakeholders,transcriptText:selected.transcriptText});
-  if(type==="transcript"&&!selected.transcriptText&&!draft.dataGaps.includes("The transcript file format is not readable as plain text."))draft.dataGaps.push("The transcript file format is not readable as plain text; the draft used document metadata and deal context.");
-  const artifactId=crypto.randomUUID(),generatedAt=new Date().toISOString(),confidence=draft.confidence==="High"?90:draft.confidence==="Medium"?70:40,sources=await Promise.all(sourceGroups.map(async source=>({...source,hash:await sha256(JSON.stringify(source.value))})));
-  await env.DB.batch([
-    env.DB.prepare("UPDATE ai_artifacts SET superseded_by=? WHERE feature='follow-up-draft' AND entity_type='deal' AND entity_id=? AND superseded_by IS NULL").bind(artifactId,entityId),
-    env.DB.prepare("INSERT INTO ai_artifacts(id,run_id,feature,entity_type,entity_id,review_status,content_json,original_content_json,explanation,confidence,provider,model,prompt_version,rules_version,input_hash,generated_by,generated_at) VALUES (?,?,'follow-up-draft','deal',?,'Draft',?,?,?,?,?,?,?,?,?,?,?)").bind(artifactId,run?.id||null,entityId,JSON.stringify(draft),JSON.stringify(draft),draft.explanation,confidence,provider,model,Number(prompt?.version||1),"follow-up-draft-v1",inputHash,user.email,generatedAt),
-    ...sources.map(source=>env.DB.prepare("INSERT INTO ai_artifact_sources(artifact_id,source_type,source_id,source_updated_at,content_hash,excerpt) VALUES (?,?,?,?,?,?)").bind(artifactId,source.type,source.id.slice(0,1000),source.updatedAt||null,source.hash,source.excerpt.slice(0,1000))),
-  ]);
-  await audit(user,"ai.follow_up.generate","ai_artifact",artifactId,"Generated a reviewable follow-up draft",{dealId:id,sourceType:type,sourceId,provider,model,promptVersion:Number(prompt?.version||1)});
-  return {artifact:artifact(await one("SELECT a.*,(SELECT count(*) FROM ai_artifact_sources s WHERE s.artifact_id=a.id) AS source_count FROM ai_artifacts a WHERE a.id=?",artifactId)),cached:false,mode:provider==="openai"?"Model-backed":"Source-backed"};
+  const result=await runAiArtifact<FollowUpDraft>({feature:"follow-up-draft",entityType:"deal",entityId,user,force,instruction:"Draft a human-reviewed follow-up. Use only these records.",data:{sourceType:type,sourceLabel:selected.label,deal:context.deal,company:context.company,stakeholders:context.stakeholders,selectedSource:selected.source,transcriptText:selected.transcriptText},rulesModel:"follow-up-rules-v1",rulesVersion:"follow-up-draft-v1",sources:sourceGroups.map(({value,...source})=>({...source,content:JSON.stringify(value)})),
+    model:{schema:followUpDraftSchema,schemaName:"clientrecord_follow_up_draft",maxOutputTokens:2200,normalize:normalizeFollowUpDraft,emptyMessage:"The AI provider returned no draft.",system:"Create a concise, professional B2B follow-up draft using only the supplied ClientRecord CRM evidence. Never invent decisions, commitments, owners, or due dates. Use an empty string or data gap when evidence is missing. The user will review this draft; do not claim it was sent."},
+    rules:()=>buildDeterministicFollowUpDraft({sourceType:type,source:selected.source,deal:context.deal,company:context.company,stakeholders:context.stakeholders,transcriptText:selected.transcriptText}),
+    finalize:draft=>type==="transcript"&&!selected.transcriptText&&!draft.dataGaps.includes("The transcript file format is not readable as plain text.")?{...draft,dataGaps:[...draft.dataGaps,"The transcript file format is not readable as plain text; the draft used document metadata and deal context."]}:draft});
+  if(!result.cached)await audit(user,"ai.follow_up.generate","ai_artifact",result.row.id,"Generated a reviewable follow-up draft",{dealId:id,sourceType:type,sourceId,provider:result.provider,model:result.model,promptVersion:result.promptVersion});
+  return {artifact:artifact(result.row),cached:result.cached,mode:aiMode(result.row.provider)};
 }
 
 export async function GET(request:Request){

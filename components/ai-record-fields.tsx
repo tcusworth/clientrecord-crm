@@ -214,7 +214,7 @@ export function AIRecordFieldsPanel({
             )}
           </div>
           <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-            Source-backed classifications remain reviewable. Lock an approved
+            Classifications cite their CRM sources and remain reviewable. Lock an approved
             manual value to prevent later generations from replacing it.
           </p>
         </div>
@@ -228,7 +228,7 @@ export function AIRecordFieldsPanel({
           >
             {data?.settings.enabled && data.providerConfigured
               ? "Model-backed"
-              : "Source-backed mode"}
+              : "Rules-based"}
           </Badge>
           <Button
             size="sm"

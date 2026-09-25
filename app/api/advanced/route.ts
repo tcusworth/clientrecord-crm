@@ -1,11 +1,9 @@
 import { env } from "cloudflare:workers";
 import { audit, can, canAdmin, crmUser } from "@/lib/crm-auth";
-import { fromEmail, resend, resendConfigured, sendingIdentity } from "@/lib/resend";
 import { runDueAutomations } from "@/lib/operations";
 
 const clean = (value: unknown, fallback = "") => typeof value === "string" ? value.trim() : fallback;
 const money = (value: unknown) => Math.max(0, Math.round(Number(value || 0) * 100));
-const stages = ["Qualified", "Discovery", "Proposal", "Negotiation", "Won", "Lost"];
 
 async function readAll(user: NonNullable<Awaited<ReturnType<typeof crmUser>>>) {
   const [deals, sources, sequences, steps, enrollments, fields, values, members, logs, integration] = await Promise.all([
@@ -38,31 +36,6 @@ async function readAll(user: NonNullable<Awaited<ReturnType<typeof crmUser>>>) {
     integration: { provider: "Microsoft 365", configured: Boolean(env.MS_CLIENT_ID && env.MS_CLIENT_SECRET && env.CRM_TOKEN_ENCRYPTION_KEY), connected: Boolean(integration), accountEmail: integration?.accountEmail || "", lastSyncedAt: integration?.lastSyncedAt || null },
     reports: { openPipeline: dealRows.filter(d => d.status === "Open").reduce((sum, d) => sum + Number(d.value || 0), 0), weightedPipeline: dealRows.filter(d => d.status === "Open").reduce((sum, d) => sum + Number(d.value || 0) * Number(d.probability || 0) / 100, 0), wonRevenue: won.reduce((sum, d) => sum + Number(d.value || 0), 0), winRate: dealRows.length ? won.length / dealRows.length * 100 : 0, pipeline, sourceROI },
   };
-}
-
-async function runDue(user: NonNullable<Awaited<ReturnType<typeof crmUser>>>) {
-  const due = await env.DB.prepare("SELECT e.id,e.sequence_id AS sequenceId,e.contact_id AS contactId,e.current_step AS currentStep,c.first_name AS firstName,c.last_name AS lastName,c.email FROM automation_enrollments e JOIN contacts c ON c.id=e.contact_id WHERE e.status='Active' AND e.next_run_at<=datetime('now') ORDER BY e.next_run_at LIMIT 100").all();
-  let processed = 0;
-  for (const row of due.results as Array<Record<string, unknown>>) {
-    const step = await env.DB.prepare("SELECT * FROM automation_steps WHERE sequence_id=? AND step_order=?").bind(row.sequenceId, row.currentStep).first<Record<string, unknown>>();
-    if (!step) { await env.DB.prepare("UPDATE automation_enrollments SET status='Completed',completed_at=datetime('now') WHERE id=?").bind(row.id).run(); continue; }
-    if (step.action_type === "email") {
-      if (!resendConfigured()) continue;
-      const identity = await sendingIdentity();
-      const body = String(step.body || "").replaceAll("{{first_name}}", String(row.firstName));
-      await resend("/emails", { method: "POST", body: JSON.stringify({ from: fromEmail(identity), to: [row.email], reply_to: identity.replyToEmail || undefined, subject: step.subject, html: `<div style=\"font:16px Arial;line-height:1.6\">${body.replaceAll("\n", "<br>")}</div>` }) });
-      await env.DB.prepare("INSERT INTO activities (contact_id,type,note,happened_at) VALUES (?,'Automated email',?,datetime('now'))").bind(row.contactId, `Sequence email: ${step.subject}`).run();
-    } else {
-      await env.DB.prepare("INSERT INTO tasks (contact_id,title,due_date,owner,status,completed) VALUES (?,?,date('now'),?,'Open',0)").bind(row.contactId, step.task_title || "Sequence follow-up", user.email).run();
-    }
-    const nextOrder = Number(row.currentStep) + 1;
-    const next = await env.DB.prepare("SELECT delay_days AS delayDays FROM automation_steps WHERE sequence_id=? AND step_order=?").bind(row.sequenceId, nextOrder).first<{ delayDays: number }>();
-    if (next) await env.DB.prepare("UPDATE automation_enrollments SET current_step=?,next_run_at=datetime('now',?) WHERE id=?").bind(nextOrder, `+${Math.max(0, next.delayDays)} days`, row.id).run();
-    else await env.DB.prepare("UPDATE automation_enrollments SET status='Completed',completed_at=datetime('now') WHERE id=?").bind(row.id).run();
-    processed++;
-  }
-  await audit(user, "automation.run", "sequence", null, `Processed ${processed} due automation steps`);
-  return processed;
 }
 
 export async function GET(request: Request) {

@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import { can, crmUser } from "@/lib/crm-auth";
+import { backupTables } from "@/lib/operations";
 
 function csv(value:unknown){const text=value==null?"":String(value);return /[",\n]/.test(text)?`"${text.replaceAll('"','""')}"`:text;}
 function download(name:string,headers:string[],rows:unknown[][]){const body=[headers,...rows].map(row=>row.map(csv).join(",")).join("\r\n");return new Response(body,{headers:{"content-type":"text/csv; charset=utf-8","content-disposition":`attachment; filename="${name}"`}});}
@@ -28,7 +29,7 @@ export async function GET(request:Request){
   return download("crm-deals.csv",["Deal","Company","Stage","Owner","Value","Probability","Next step","Close date","Lead source","Status","Created","Updated"],result.results.map((r:Record<string,unknown>)=>[r.name,r.company,r.stage,r.owner,Number(r.value||0)/100,r.probability,r.next_step,r.close_date,r.lead_source,r.status,r.created_at,r.updated_at]));
  }
  if(type==="backup"){
-  const tables=["contacts","activities","tasks","lead_intakes","inbox_messages","campaigns","campaign_events","segments","suppressions","consent_events","companies","deals","lead_sources","automation_sequences","automation_steps","automation_enrollments","custom_field_definitions","custom_field_values","team_members","audit_logs","sync_records","brand_settings","sales_pipelines","account_stakeholders","account_signals","qualification_alerts","deal_stage_history","deal_tasks","deal_activities","deal_relationship_health_scores","deal_recommendations","deal_notes","deal_stakeholders","deal_line_items","deal_insights","deal_reviews","deal_proposals","client_documents","document_versions","deal_meetings","deal_meeting_attendees","meetily_webhook_events","ai_settings","ai_prompt_versions","ai_runs","ai_artifacts","ai_artifact_sources","ai_feedback_events","ai_record_fields"];const data:Record<string,unknown>={exportedAt:new Date().toISOString()};for(const table of tables)data[table]=(await env.DB.prepare(`SELECT * FROM ${table}`).all()).results;return new Response(JSON.stringify(data,null,2),{headers:{"content-type":"application/json","content-disposition":"attachment; filename=crm-account-backup.json"}});
+  const tables=backupTables;const data:Record<string,unknown>={exportedAt:new Date().toISOString()};for(const table of tables)data[table]=(await env.DB.prepare(`SELECT * FROM ${table}`).all()).results;return new Response(JSON.stringify(data,null,2),{headers:{"content-type":"application/json","content-disposition":"attachment; filename=crm-account-backup.json"}});
  }
  return Response.json({error:"Unknown export type."},{status:400});
 }
