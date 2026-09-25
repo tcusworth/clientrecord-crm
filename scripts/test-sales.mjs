@@ -1,26 +1,21 @@
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import vm from "node:vm";
-import { DatabaseSync } from "node:sqlite";
-import ts from "typescript";
-const sqlite=new DatabaseSync(":memory:");
-sqlite.exec("PRAGMA foreign_keys=ON");
-const migrations=fs.readdirSync("drizzle").filter(f=>f.endsWith(".sql")).sort();
-for(const file of migrations.slice(0,-1))sqlite.exec(fs.readFileSync("drizzle/"+file,"utf8"));
+import { applyMigrations, createD1, createModuleLoader, createSqlite, migrationFiles } from "./test-helpers.mjs";
+// Upgrade path: 0006_rainy_microchip adds account/pipeline columns (fit/intent scores, temperature,
+// pipeline_key, stage_key, ...) to existing companies and deals. Seed pre-0006 rows, then apply it.
+const UPGRADE_MIGRATION="0006_rainy_microchip.sql";
+const migrations=migrationFiles(),upgradeIndex=migrations.indexOf(UPGRADE_MIGRATION);
+assert.ok(upgradeIndex>0,"missing "+UPGRADE_MIGRATION);
+const sqlite=createSqlite({migrations:migrations.slice(0,upgradeIndex)});
 sqlite.exec("INSERT INTO contacts(id,first_name,last_name,email,company,created_at) VALUES (1,'Test','Contact','test@example.com','Legacy','2026-01-01')");
 sqlite.exec("INSERT INTO companies(id,name,updated_at) VALUES(1,'Legacy','2026-01-01')");
 sqlite.exec("INSERT INTO deals(id,name,company,stage,status,created_at,updated_at) VALUES(1,'Legacy deal','Legacy','Qualified','Open','2026-01-01','2026-01-01')");
-sqlite.exec(fs.readFileSync("drizzle/"+migrations.at(-1),"utf8"));
+applyMigrations(sqlite,[UPGRADE_MIGRATION]);
 assert.equal(sqlite.prepare("SELECT name FROM deals WHERE id=1").get().name,"Legacy deal");
-const DB={
- prepare(sql){return {args:[],bind(...args){this.args=args;return this},async all(){return {results:sqlite.prepare(sql).all(...this.args)}},async first(){return sqlite.prepare(sql).get(...this.args)||null},async run(){const r=sqlite.prepare(sql).run(...this.args);return {meta:{last_row_id:Number(r.lastInsertRowid),changes:r.changes}}}}},
- async batch(statements){sqlite.exec("BEGIN");try{const result=[];for(const s of statements)result.push(await s.run());sqlite.exec("COMMIT");return result}catch(e){sqlite.exec("ROLLBACK");throw e}},
-};
-const env={DB,CRM_ALLOWED_EMAILS:"owner@example.com"};
-const modules={};
-function load(file){if(modules[file])return modules[file];const module={exports:{}};const code=ts.transpileModule(fs.readFileSync(file,"utf8"),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
- const require=name=>name==="cloudflare:workers"?{env}:name.startsWith("@/")?load(name.slice(2)+".ts"):(()=>{throw new Error("Unexpected module "+name)})();
- const run=vm.runInThisContext("(function(require,module,exports){"+code+"\n})",{filename:file});run(require,module,module.exports);modules[file]=module.exports;return module.exports;}
+assert.deepEqual({...sqlite.prepare("SELECT pipeline_key,stage_key FROM deals WHERE id=1").get()},{pipeline_key:"default",stage_key:null});
+assert.equal(sqlite.prepare("SELECT temperature FROM companies WHERE id=1").get().temperature,"Cold");
+applyMigrations(sqlite,migrations.slice(upgradeIndex+1));
+const env={DB:createD1(sqlite),CRM_ALLOWED_EMAILS:"owner@example.com"};
+const load=createModuleLoader(env);
 const {POST,GET}=load("app/api/sales/route.ts");
 const rules=load("lib/sales-rules.ts");
 let checks=1;

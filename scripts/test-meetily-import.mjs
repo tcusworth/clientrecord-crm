@@ -1,12 +1,7 @@
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import vm from "node:vm";
-import ts from "typescript";
+import { createModuleLoader } from "./test-helpers.mjs";
 
-const file="lib/meetily-import.ts",module={exports:{}};
-const code=ts.transpileModule(fs.readFileSync(file,"utf8"),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
-vm.runInThisContext(`(function(module,exports){${code}\n})`,{filename:file})(module,module.exports);
-const {parseMeetilyImport}=module.exports;
+const {parseMeetilyImport}=createModuleLoader()("lib/meetily-import.ts");
 
 const notes=`# Meeting Summary: Acme technical review
 

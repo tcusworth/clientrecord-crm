@@ -1,19 +1,7 @@
-/* eslint-disable @next/next/no-assign-module-variable */
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import vm from "node:vm";
-import { DatabaseSync } from "node:sqlite";
-import ts from "typescript";
+import { createTestContext } from "./test-helpers.mjs";
 
-const sqlite=new DatabaseSync(":memory:");
-sqlite.exec("PRAGMA foreign_keys=ON");
-for(const file of fs.readdirSync("drizzle").filter(file=>file.endsWith(".sql")).sort())sqlite.exec(fs.readFileSync(`drizzle/${file}`,"utf8"));
-const DB={
-  prepare(sql){return{args:[],bind(...args){this.args=args;return this},async all(){return{results:sqlite.prepare(sql).all(...this.args)}},async first(){return sqlite.prepare(sql).get(...this.args)||null},async run(){const result=sqlite.prepare(sql).run(...this.args);return{meta:{last_row_id:Number(result.lastInsertRowid),changes:result.changes}}}}},
-  async batch(statements){sqlite.exec("BEGIN");try{const results=[];for(const statement of statements)results.push(await statement.run());sqlite.exec("COMMIT");return results}catch(error){sqlite.exec("ROLLBACK");throw error}},
-};
-const env={DB,CRM_ALLOWED_EMAILS:"owner@example.com"},modules={};
-function load(file){if(modules[file])return modules[file];const module={exports:{}};const code=ts.transpileModule(fs.readFileSync(file,"utf8"),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;const require=name=>name==="cloudflare:workers"?{env}:name.startsWith("@/")?load(name.slice(2)+".ts"):(()=>{throw new Error(`Unexpected module ${name}`)})();vm.runInThisContext(`(function(require,module,exports){${code}\n})`,{filename:file})(require,module,module.exports);modules[file]=module.exports;return module.exports}
+const { sqlite, load } = createTestContext();
 
 sqlite.exec(`
 INSERT INTO contacts(id,first_name,last_name,email,company,title,stage,tags,created_at,updated_at) VALUES
