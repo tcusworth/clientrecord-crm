@@ -779,7 +779,12 @@ export async function POST(request: Request) {
       return Response.json(await generate(type, id, user, Boolean(body.force)));
     }
     if (action === "review") {
-      const error = denied(user, "ai.review");
+      // Accepting applies values to the record, so it also needs records.edit.
+      const error =
+        denied(user, "ai.review") ||
+        (clean(body.status, 20) === "Accepted"
+          ? denied(user, "records.edit")
+          : null);
       if (error) return error;
       const artifactId = clean(body.artifactId, 120),
         status = clean(body.status, 20);

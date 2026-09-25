@@ -1,9 +1,11 @@
 import { env } from "cloudflare:workers";
 import { fromEmail, resend, resendConfigured, sendingIdentity } from "@/lib/resend";
-import { audit, can, crmUser, displayName } from "@/lib/crm-auth";
+import { audit, can, canAdmin, crmUser, displayName } from "@/lib/crm-auth";
 import { maybeRunDailyMaintenance } from "@/lib/operations";
 
 function clean(value: unknown, fallback = "") { return typeof value === "string" ? value.trim() : fallback; }
+const LIMITS = { notes: 20000, subject: 500, html: 500000 } as const;
+function overLimit(body: Record<string, unknown>, fields: Array<[string, keyof typeof LIMITS]>) { const hit = fields.find(([key, limit]) => clean(body[key]).length > LIMITS[limit]); return hit ? Response.json({ error: `${hit[0]} is limited to ${LIMITS[hit[1]].toLocaleString("en-US")} characters.` }, { status: 400 }) : null; }
 async function customFieldChanges(body: Record<string, unknown>, entityType: "contact" | "company", entityId: number) {
   const definitions = (await env.DB.prepare("SELECT id,field_type AS fieldType,options FROM custom_field_definitions WHERE entity_type=?").bind(entityType).all<Record<string, unknown>>()).results;
   const statements: D1PreparedStatement[] = [];
@@ -84,12 +86,13 @@ async function syncCampaign(id: number) {
   return { segmentId, recipientCount: contacts.length };
 }
 
-export async function GET(request:Request) { const account=await crmUser(request);if(!account)return Response.json({error:"Sign in is required."},{status:401});try { await maybeRunDailyMaintenance(account.email);return Response.json(await readAll(account)); } catch { return Response.json({ error: "CRM data is temporarily unavailable." }, { status:503 }); } }
+export async function GET(request:Request) { const account=await crmUser(request);if(!account)return Response.json({error:"Sign in is required."},{status:401});if(!can(account,"records.view"))return Response.json({error:"View access is required."},{status:403});try { await maybeRunDailyMaintenance(account.email);return Response.json(await readAll(account)); } catch { return Response.json({ error: "CRM data is temporarily unavailable." }, { status:503 }); } }
 export async function POST(request: Request) {
   try {
     const account=await crmUser(request);if(!account)return Response.json({error:"Sign in is required."},{status:401});
     const body = await request.json() as Record<string, unknown>;
     if(!can(account,body.action==="deleteContact"?"records.delete":"records.edit"))return Response.json({error:body.action==="deleteContact"?"Record-delete permission is required.":"Record-edit permission is required."},{status:403});
+    const tooLong=overLimit(body,[["notes","notes"],["subject","subject"],["previewText","subject"],["html","html"],["textBody","html"]]);if(tooLong)return tooLong;
     await audit(account,String(body.action||"write"),"crm",body.id||body.contactId||body.email||null,`CRM action: ${String(body.action||"write")}`,body);
     if (body.action === "createContact") {
       const firstName=clean(body.firstName), lastName=clean(body.lastName), email=clean(body.email).toLowerCase(); if (!firstName || !lastName || !email) return Response.json({error:"Name and email are required."},{status:400});
@@ -160,10 +163,11 @@ export async function POST(request: Request) {
     if(body.action==="deleteSegment"){await env.DB.prepare("DELETE FROM segments WHERE id=?").bind(Number(body.id)).run();return Response.json({status:"deleted"});}
     if(body.action==="suppressContact"){
       const email=clean(body.email).toLowerCase(),reason=clean(body.reason,"Manual unsubscribe");if(!email)return Response.json({error:"Email is required."},{status:400});
-      await env.DB.batch([env.DB.prepare("INSERT INTO suppressions (email,reason,source,created_at,removed_at) VALUES (?,?,'Manual',datetime('now'),NULL) ON CONFLICT(email) DO UPDATE SET reason=excluded.reason,source='Manual',created_at=datetime('now'),removed_at=NULL").bind(email,reason),env.DB.prepare("UPDATE contacts SET subscribed=0,suppression_reason=?,suppressed_at=datetime('now'),resend_synced_at=NULL,updated_at=datetime('now') WHERE email=?").bind(reason,email),env.DB.prepare("INSERT INTO consent_events (email,status,reason,source,occurred_at) VALUES (?,'Unsubscribed',?,'Manual',datetime('now'))").bind(email,reason)]);return Response.json({status:"suppressed"});
+      await env.DB.batch([env.DB.prepare("INSERT INTO suppressions (email,reason,source,created_at,removed_at) VALUES (?,?,'Manual',datetime('now'),NULL) ON CONFLICT(email) DO UPDATE SET reason=excluded.reason,source='Manual',created_at=datetime('now'),removed_at=NULL WHERE suppressions.removed_at IS NOT NULL OR suppressions.source='Manual'").bind(email,reason),env.DB.prepare("UPDATE contacts SET subscribed=0,suppression_reason=?,suppressed_at=datetime('now'),resend_synced_at=NULL,updated_at=datetime('now') WHERE email=?").bind(reason,email),env.DB.prepare("INSERT INTO consent_events (email,status,reason,source,occurred_at) VALUES (?,'Unsubscribed',?,'Manual',datetime('now'))").bind(email,reason)]);return Response.json({status:"suppressed"});
     }
     if(body.action==="restoreContact"){
-      const email=clean(body.email).toLowerCase();await env.DB.batch([env.DB.prepare("UPDATE suppressions SET removed_at=datetime('now') WHERE email=? AND removed_at IS NULL").bind(email),env.DB.prepare("UPDATE contacts SET subscribed=1,suppression_reason=NULL,suppressed_at=NULL,resend_synced_at=NULL,updated_at=datetime('now') WHERE email=?").bind(email),env.DB.prepare("INSERT INTO consent_events (email,status,reason,source,occurred_at) VALUES (?,'Subscribed','Manually restored','Manual',datetime('now'))").bind(email)]);return Response.json({status:"restored"});
+      // Suppressions from the recipient or the provider (public unsubscribe page, Resend bounce/complaint webhooks) are consent records: only owners/admins may reverse them. Manual suppressions stay editor-level.
+      const email=clean(body.email).toLowerCase(),suppression=await env.DB.prepare("SELECT source FROM suppressions WHERE email=? AND removed_at IS NULL").bind(email).first<{source:string}>();if(suppression&&suppression.source!=="Manual"&&!canAdmin(account.role))return Response.json({error:"Only an owner or admin can re-subscribe someone who unsubscribed, bounced, or complained."},{status:403});await env.DB.batch([env.DB.prepare("UPDATE suppressions SET removed_at=datetime('now') WHERE email=? AND removed_at IS NULL").bind(email),env.DB.prepare("UPDATE contacts SET subscribed=1,suppression_reason=NULL,suppressed_at=NULL,resend_synced_at=NULL,updated_at=datetime('now') WHERE email=?").bind(email),env.DB.prepare("INSERT INTO consent_events (email,status,reason,source,occurred_at) VALUES (?,'Subscribed','Manually restored','Manual',datetime('now'))").bind(email)]);return Response.json({status:"restored"});
     }
     if(body.action==="mergeContacts"){
       const keepId=Number(body.keepId),mergeId=Number(body.mergeId);if(!keepId||!mergeId||keepId===mergeId)return Response.json({error:"Choose two different contacts."},{status:400});
@@ -180,8 +184,8 @@ export async function POST(request: Request) {
       if(id){await env.DB.prepare("UPDATE campaigns SET name=?,subject=?,preview_text=?,html=?,text_body=?,audience=?,status='Draft',resend_segment_id=NULL,resend_broadcast_id=NULL,scheduled_at=NULL,updated_at=datetime('now') WHERE id=?").bind(name,subject,previewText,html,textBody,audience,id).run();return Response.json({id});}
       const result=await env.DB.prepare("INSERT INTO campaigns (name,subject,preview_text,html,text_body,status,audience,recipient_count,created_at,updated_at) VALUES (?,?,?,?,?,'Draft',?,0,date('now'),datetime('now'))").bind(name,subject,previewText,html,textBody,audience).run(); return Response.json({id:result.meta.last_row_id},{status:201});
     }
+    if ((body.action === "syncCampaignAudience" || body.action === "sendCampaignTest" || body.action === "scheduleCampaign") && !can(account,"campaigns.send")) return Response.json({error:"Campaign send permission is required."},{status:403});
     if (body.action === "syncCampaignAudience") return Response.json(await syncCampaign(Number(body.id)));
-    if ((body.action === "sendCampaignTest" || body.action === "scheduleCampaign") && !can(account,"campaigns.send")) return Response.json({error:"Campaign send permission is required."},{status:403});
     if (body.action === "sendCampaignTest") {
       const campaign=await campaignRow(Number(body.id)), to=clean(body.to).toLowerCase(); if(!campaign||!to.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/))return Response.json({error:"Choose a campaign and enter a valid test address."},{status:400});
       const identity=await sendingIdentity();

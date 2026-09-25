@@ -1,11 +1,15 @@
 import { env } from "cloudflare:workers";
 import { aiFeatures, loadAiSettings, providerConfigured } from "@/lib/ai-governance";
 import { audit, can, crmUser, type CRMUser } from "@/lib/crm-auth";
+import { normalizeFollowUpDraft } from "@/lib/follow-up-drafts";
+import { normalizeProposalDraft } from "@/lib/ai-proposals";
 
 type Row=Record<string,unknown>;
 const bool=(value:unknown)=>value===true||value===1||value==="1"||value==="true"||value==="on";
 const int=(value:unknown,min:number,max:number,fallback:number)=>{const parsed=Number(value);return Number.isFinite(parsed)?Math.min(max,Math.max(min,Math.round(parsed))):fallback};
 const allowedFeatures=new Set<string>(aiFeatures.map(feature=>feature.key));
+// Only features whose own routes accept edits may be edited here, normalized the same way those routes do.
+const editableFeatures:Record<string,(value:unknown)=>unknown>={"follow-up-draft":normalizeFollowUpDraft,"proposal-draft":normalizeProposalDraft};
 
 function denied(user:CRMUser|null,permission:"ai.view"|"ai.configure"|"ai.review"){
   if(!user)return Response.json({error:"Authorized sign-in is required."},{status:401});
@@ -65,8 +69,8 @@ export async function POST(request:Request){
   if(action==="reviewArtifact"){
     const error=denied(user,"ai.review");if(error)return error;const id=String(body.id||""),status=String(body.status||"");
     if(!["Accepted","Edited","Rejected"].includes(status))return Response.json({error:"Choose Accepted, Edited, or Rejected."},{status:400});
-    const artifact=await env.DB.prepare("SELECT id,review_status AS reviewStatus,content_json AS contentJson FROM ai_artifacts WHERE id=?").bind(id).first<Row>();if(!artifact)return Response.json({error:"AI result was not found."},{status:404});
-    let contentJson=String(artifact.contentJson||"{}");if(status==="Edited"){try{contentJson=JSON.stringify(JSON.parse(String(body.contentJson||"{}")))}catch{return Response.json({error:"Edited content must be valid JSON."},{status:400})}}
+    const artifact=await env.DB.prepare("SELECT id,feature,review_status AS reviewStatus,content_json AS contentJson FROM ai_artifacts WHERE id=?").bind(id).first<Row>();if(!artifact)return Response.json({error:"AI result was not found."},{status:404});
+    let contentJson=String(artifact.contentJson||"{}");if(status==="Edited"){const normalize=editableFeatures[String(artifact.feature)];if(!normalize)return Response.json({error:"This AI result cannot be edited; accept or reject it."},{status:400});try{contentJson=JSON.stringify(normalize(JSON.parse(String(body.contentJson||"{}"))))}catch{return Response.json({error:"Edited content must be valid JSON."},{status:400})}}
     const before=JSON.stringify({reviewStatus:artifact.reviewStatus,contentJson:artifact.contentJson}),after=JSON.stringify({reviewStatus:status,contentJson});
     await env.DB.batch([
       env.DB.prepare("INSERT INTO ai_feedback_events(artifact_id,action,before_json,after_json,comment,actor,created_at) VALUES (?,?,?,?,?,?,datetime('now'))").bind(id,status,before,after,String(body.comment||"").slice(0,4000),user.email),

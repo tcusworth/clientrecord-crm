@@ -42,6 +42,7 @@ function recalculate(id:number|string,actor:string){
 }
 export async function GET(request:Request){
   const user=await crmUser(request);if(!user)return Response.json({error:"Sign in is required."},{status:401});
+  if(!can(user,"records.view"))return Response.json({error:"View access is required."},{status:403});
   try{
     const accountId=Number(new URL(request.url).searchParams.get("account"));
     if(accountId){
