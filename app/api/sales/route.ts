@@ -51,8 +51,8 @@ export async function GET(request:Request){
         UNION ALL SELECT 'signal-'||id,'Signal',kind||': '||summary,occurred_at,actor FROM account_signals WHERE company_id=?
         UNION ALL SELECT 'stage-'||h.id,'Deal stage',d.name||': '||h.from_stage||' → '||h.to_stage,h.happened_at,h.actor FROM deal_stage_history h JOIN deals d ON d.id=h.deal_id WHERE d.company=(SELECT name FROM companies WHERE id=?)
         UNION ALL SELECT 'deal-activity-'||a.id,a.type,d.name||': '||COALESCE(NULLIF(a.subject,''),a.body),a.happened_at,a.owner FROM deal_activities a JOIN deals d ON d.id=a.deal_id WHERE a.company_id=? OR d.company_id=?
-        UNION ALL SELECT 'document-'||v.id,'Document',d.title||' · '||d.category,v.uploaded_at,v.uploaded_by FROM client_documents d JOIN document_versions v ON v.document_id=d.id AND v.version=d.latest_version WHERE d.company_id=? OR d.deal_id IN(SELECT id FROM deals WHERE company_id=?)
-        ORDER BY date DESC LIMIT 150`,accountId,accountId,accountId,accountId,accountId,accountId,accountId,accountId);
+        UNION ALL SELECT 'document-'||v.id,'Document',d.title||' · '||d.category,v.uploaded_at,v.uploaded_by FROM client_documents d JOIN document_versions v ON v.document_id=d.id AND v.version=d.latest_version WHERE (d.company_id=? OR d.deal_id IN(SELECT id FROM deals WHERE company_id=?)) AND (?=1 OR d.sensitive=0)
+        ORDER BY date DESC LIMIT 150`,accountId,accountId,accountId,accountId,accountId,accountId,accountId,accountId,can(user,"documents.manage_sensitive")?1:0);
       return Response.json({timeline});
     }
     // Read-only: companies are reconciled from contact company names on contact writes (lib/crm-records.ts), not here.

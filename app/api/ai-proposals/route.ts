@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { loadAiSettings, providerConfigured } from "@/lib/ai-governance";
+import { loadAiSettings, providerConfigured, visibleArtifactSql } from "@/lib/ai-governance";
 import { aiMode, runAiArtifact } from "@/lib/ai-runner";
 import { buildDeterministicProposalDraft, normalizeProposalDraft, proposalDraftSchema, type ProposalDraft } from "@/lib/ai-proposals";
 import { audit, can, crmUser, type CRMUser } from "@/lib/crm-auth";
@@ -49,7 +49,7 @@ async function generate(id:number,user:CRMUser,force:boolean){
 }
 
 export async function GET(request:Request){
-  const user=await crmUser(request),error=denied(user,"ai.view");if(error)return error;try{const id=dealId(new URL(request.url).searchParams.get("dealId")),settings=await loadAiSettings(),drafts=await rows("SELECT a.*,(SELECT count(*) FROM ai_artifact_sources s WHERE s.artifact_id=a.id) AS source_count FROM ai_artifacts a WHERE a.feature='proposal-draft' AND a.entity_type='deal' AND a.entity_id=? ORDER BY a.generated_at DESC LIMIT 12",String(id));return Response.json({drafts:drafts.map(artifact),providerConfigured:providerConfigured(),settings:{enabled:Boolean(settings.enabled)},permissions:{generate:can(user!,"ai.generate")&&can(user!,"records.edit"),review:can(user!,"ai.review"),edit:can(user!,"records.edit")}})}catch(error){return Response.json({error:error instanceof Error?error.message:"AI proposals could not load."},{status:400})}
+  const user=await crmUser(request),error=denied(user,"ai.view");if(error)return error;try{const id=dealId(new URL(request.url).searchParams.get("dealId")),settings=await loadAiSettings(),drafts=await rows(`SELECT a.*,(SELECT count(*) FROM ai_artifact_sources s WHERE s.artifact_id=a.id) AS source_count FROM ai_artifacts a WHERE a.feature='proposal-draft' AND a.entity_type='deal' AND a.entity_id=? AND ${visibleArtifactSql(user!)} ORDER BY a.generated_at DESC LIMIT 12`,String(id));return Response.json({drafts:drafts.map(artifact),providerConfigured:providerConfigured(),settings:{enabled:Boolean(settings.enabled)},permissions:{generate:can(user!,"ai.generate")&&can(user!,"records.edit"),review:can(user!,"ai.review"),edit:can(user!,"records.edit")}})}catch(error){return Response.json({error:error instanceof Error?error.message:"AI proposals could not load."},{status:400})}
 }
 
 export async function POST(request:Request){
@@ -58,7 +58,7 @@ export async function POST(request:Request){
     if(action==="generate"){
       const error=denied(user,"ai.generate")||denied(user,"records.edit");if(error)return error;const result=await generate(id,user,body.force===true);await audit(user,"ai.proposal.generate","ai_artifact",result.artifact.id,result.cached?"Used cached proposal draft":"Generated proposal draft",{dealId:id,cached:result.cached,sourceCount:result.artifact.sourceCount});return Response.json({ok:true,...result});
     }
-    const artifactId=clean(body.artifactId,100),record=await one("SELECT * FROM ai_artifacts WHERE id=? AND feature='proposal-draft' AND entity_type='deal' AND entity_id=?",artifactId,String(id));if(!record)throw new Error("Proposal draft not found.");
+    const artifactId=clean(body.artifactId,100),record=await one(`SELECT * FROM ai_artifacts WHERE id=? AND feature='proposal-draft' AND entity_type='deal' AND entity_id=? AND ${visibleArtifactSql(user,"")}`,artifactId,String(id));if(!record)throw new Error("Proposal draft not found.");
     if(action==="review"){
       const error=denied(user,"ai.review");if(error)return error;const status=clean(body.status,20);if(!["Accepted","Rejected","Edited"].includes(status))throw new Error("Choose accepted, rejected, or edited.");const before=JSON.stringify({reviewStatus:record.review_status,contentJson:record.content_json}),content=status==="Edited"?normalizeProposalDraft(body.content):normalizeProposalDraft(parse(record.content_json)),after=JSON.stringify({reviewStatus:status,content});await env.DB.batch([env.DB.prepare("INSERT INTO ai_feedback_events(artifact_id,action,before_json,after_json,comment,actor,created_at) VALUES (?,?,?,?,?,?,?)").bind(artifactId,status,before,after,clean(body.comment),user.email,now),env.DB.prepare("UPDATE ai_artifacts SET review_status=?,content_json=?,reviewed_by=?,reviewed_at=? WHERE id=?").bind(status,JSON.stringify(content),user.email,now,artifactId)]);await audit(user,"ai.proposal.review","ai_artifact",artifactId,`${status} proposal draft`,{dealId:id,status});return Response.json({ok:true});
     }

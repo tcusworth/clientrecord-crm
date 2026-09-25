@@ -11,7 +11,7 @@ const addresses=(value:string)=>Array.from(value.matchAll(/[A-Z0-9._%+-]+@[A-Z0-
 function parts(payload:unknown):Row[]{const row=(payload||{}) as Row,children=Array.isArray(row.parts)?row.parts as Row[]:[];return [row,...children.flatMap(child=>parts(child))]}
 
 export async function POST(request:Request){
- const user=await crmUser(request);if(!user)return Response.json({error:"Sign in is required."},{status:401});if(!can(user,"records.edit"))return Response.json({error:"Edit access is required."},{status:403});
+ const user=await crmUser(request);if(!user)return Response.json({error:"Sign in is required."},{status:401});if(!can(user,"integrations.manage"))return Response.json({error:"Integration management permission is required to sync the connected mailbox."},{status:403});
  try{
   const account=await env.DB.prepare("SELECT * FROM integration_accounts WHERE provider='google'").first<Row>();if(!account)return Response.json({error:"Connect Google Workspace first."},{status:409});let access=await decryptToken(String(account.access_token));const refresh=account.refresh_token?await decryptToken(String(account.refresh_token)):"";
   if(new Date(String(account.expires_at)).getTime()<Date.now()+120000){if(!refresh)throw new Error("Reconnect Google Workspace to refresh access.");const next=await refreshGoogleToken(refresh);access=String(next.access_token);await env.DB.prepare("UPDATE integration_accounts SET access_token=?,expires_at=?,updated_at=datetime('now') WHERE provider='google'").bind(await encryptToken(access),new Date(Date.now()+Number(next.expires_in||3600)*1000).toISOString()).run();}

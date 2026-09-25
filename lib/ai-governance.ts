@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { sha256, type CRMUser } from "@/lib/crm-auth";
+import { can, sha256, type CRMUser } from "@/lib/crm-auth";
 
 type Row = Record<string, unknown>;
 
@@ -67,7 +67,12 @@ export async function failAiRun(run:{id:string;startedAt:number},error:unknown){
   await env.DB.prepare("UPDATE ai_runs SET status='Failed',error=?,latency_ms=?,completed_at=datetime('now') WHERE id=?").bind(message,Date.now()-run.startedAt,run.id).run();
 }
 
-export async function findCachedArtifact(feature:string,entityType:string,entityId:unknown,inputHash:string,currentOnly=false){
-  return env.DB.prepare(`SELECT a.*,(SELECT count(*) FROM ai_artifact_sources s WHERE s.artifact_id=a.id) AS source_count FROM ai_artifacts a WHERE a.feature=? AND a.entity_type=? AND a.entity_id IS ? AND a.input_hash=? AND a.review_status!='Rejected'${currentOnly?" AND a.superseded_by IS NULL":""} ORDER BY a.generated_at DESC LIMIT 1`)
-    .bind(feature,entityType,entityId==null?null:String(entityId),inputHash).first<Row>();
+export async function findCachedArtifact(feature:string,entityType:string,entityId:unknown,inputHash:string,currentOnly=false,sensitive=false){
+  return env.DB.prepare(`SELECT a.*,(SELECT count(*) FROM ai_artifact_sources s WHERE s.artifact_id=a.id) AS source_count FROM ai_artifacts a WHERE a.feature=? AND a.entity_type=? AND a.entity_id IS ? AND a.input_hash=? AND a.sensitive=? AND a.review_status!='Rejected'${currentOnly?" AND a.superseded_by IS NULL":""} ORDER BY a.generated_at DESC LIMIT 1`)
+    .bind(feature,entityType,entityId==null?null:String(entityId),inputHash,sensitive?1:0).first<Row>();
 }
+
+// AI artifacts built from sensitive client documents (ai_artifacts.sensitive) are visible only with documents.manage_sensitive.
+// Every reader of ai_artifacts adds this condition, so hidden artifacts can be neither listed nor reviewed/edited.
+export const canSeeSensitive=(user:CRMUser)=>can(user,"documents.manage_sensitive");
+export const visibleArtifactSql=(user:CRMUser,alias="a")=>canSeeSensitive(user)?"1=1":`${alias?`${alias}.`:""}sensitive=0`;

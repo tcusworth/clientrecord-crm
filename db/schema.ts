@@ -248,6 +248,7 @@ export const aiArtifacts = sqliteTable("ai_artifacts", {
   explanation: text("explanation").notNull().default(""), confidence: integer("confidence").notNull().default(0), provider: text("provider").notNull(), model: text("model").notNull(),
   promptVersion: integer("prompt_version"), rulesVersion: text("rules_version").notNull().default(""), inputHash: text("input_hash").notNull(), generatedBy: text("generated_by").notNull(),
   generatedAt: text("generated_at").notNull(), reviewedBy: text("reviewed_by"), reviewedAt: text("reviewed_at"), supersededBy: text("superseded_by"),
+  sensitive: integer("sensitive",{mode:"boolean"}).notNull().default(false),
 }, t => [index("ai_artifacts_entity_date").on(t.entityType,t.entityId,t.generatedAt),index("ai_artifacts_status_date").on(t.reviewStatus,t.generatedAt)]);
 export const aiArtifactSources = sqliteTable("ai_artifact_sources", {
   id: integer("id").primaryKey({autoIncrement:true}), artifactId: text("artifact_id").notNull().references(()=>aiArtifacts.id), sourceType: text("source_type").notNull(), sourceId: text("source_id").notNull(),

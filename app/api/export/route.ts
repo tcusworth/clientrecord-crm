@@ -29,6 +29,8 @@ export async function GET(request:Request){
   return download("crm-deals.csv",["Deal","Company","Stage","Owner","Value","Probability","Next step","Close date","Lead source","Status","Created","Updated"],result.results.map((r:Record<string,unknown>)=>[r.name,r.company,r.stage,r.owner,Number(r.value||0)/100,r.probability,r.next_step,r.close_date,r.lead_source,r.status,r.created_at,r.updated_at]));
  }
  if(type==="backup"){
+  // The full JSON backup includes team members, audit logs and sensitive document metadata: owner-only, like /api/backup-export.
+  if(user.role!=="owner")return Response.json({error:"Only the account owner can download the complete backup."},{status:403});
   const tables=backupTables;const data:Record<string,unknown>={exportedAt:new Date().toISOString()};for(const table of tables)data[table]=(await env.DB.prepare(`SELECT * FROM ${table}`).all()).results;return new Response(JSON.stringify(data,null,2),{headers:{"content-type":"application/json","content-disposition":"attachment; filename=crm-account-backup.json"}});
  }
  return Response.json({error:"Unknown export type."},{status:400});

@@ -1,0 +1,6 @@
+ALTER TABLE `ai_artifacts` ADD `sensitive` integer DEFAULT false NOT NULL;--> statement-breakpoint
+-- Backfill: AI artifacts whose inputs included a sensitive client document (content or title) are sensitive.
+UPDATE `ai_artifacts` SET `sensitive`=1 WHERE `id` IN (SELECT s.artifact_id FROM `ai_artifact_sources` s JOIN `client_documents` d ON d.id=s.source_id WHERE s.source_type='transcript' AND d.sensitive=1);--> statement-breakpoint
+UPDATE `ai_artifacts` SET `sensitive`=1 WHERE `feature`='follow-up-draft' AND `id` IN (SELECT s.artifact_id FROM `ai_artifact_sources` s JOIN `deal_meetings` m ON m.id=s.source_id JOIN `client_documents` d ON d.id=m.transcript_document_id WHERE s.source_type='meeting' AND d.sensitive=1);--> statement-breakpoint
+UPDATE `ai_artifacts` SET `sensitive`=1 WHERE `feature`='account-plan' AND `entity_type`='company' AND `entity_id` IN (SELECT CAST(company_id AS TEXT) FROM `client_documents` WHERE sensitive=1 AND company_id IS NOT NULL);--> statement-breakpoint
+UPDATE `ai_artifacts` SET `sensitive`=1 WHERE `feature`='negotiation-intelligence' AND `entity_type`='deal' AND `entity_id` IN (SELECT CAST(deal_id AS TEXT) FROM `client_documents` WHERE sensitive=1 AND deal_id IS NOT NULL);

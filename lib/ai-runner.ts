@@ -5,7 +5,7 @@ import { sha256, type CRMUser } from "@/lib/crm-auth";
 type Row=Record<string,unknown>;
 export type AiSource={type:string;id:string;updatedAt?:string|null;excerpt:string;content:string};
 export type AiModelSpec<T>={system:string;schema:unknown;schemaName:string;maxOutputTokens:number;normalize:(value:unknown)=>T;emptyMessage?:string};
-export type AiRunOptions<T extends {explanation:string;confidence:string}>={feature:string;promptFeature?:string;entityType:string;entityId:string;user:CRMUser;force:boolean;instruction:string;data:Row;rulesModel:string;rulesVersion:string;sources:AiSource[];model:AiModelSpec<T>;rules:()=>T;finalize?:(output:T,modelBacked:boolean)=>T;currentOnly?:boolean};
+export type AiRunOptions<T extends {explanation:string;confidence:string}>={feature:string;promptFeature?:string;entityType:string;entityId:string;user:CRMUser;force:boolean;instruction:string;data:Row;rulesModel:string;rulesVersion:string;sources:AiSource[];model:AiModelSpec<T>;rules:()=>T;finalize?:(output:T,modelBacked:boolean)=>T;currentOnly?:boolean;sensitive?:boolean};
 
 const clean=(value:unknown,max=4000)=>String(value??"").trim().slice(0,max);
 const confidenceScore=(value:string)=>value==="High"?90:value==="Medium"?70:40;
@@ -36,7 +36,7 @@ export const artifactById=(id:string)=>env.DB.prepare("SELECT a.*,(SELECT count(
 export async function runAiArtifact<T extends {explanation:string;confidence:string}>(options:AiRunOptions<T>){
   const settings=await loadAiSettings(),prompt=await env.DB.prepare("SELECT * FROM ai_prompt_versions WHERE feature=? AND status='Active' ORDER BY version DESC LIMIT 1").bind(options.promptFeature||options.feature).first<Row>(),promptVersion=Number(prompt?.version||1),modelBacked=Boolean(settings.enabled)&&providerConfigured();
   const {json:input}=fitJson({instruction:options.instruction,...options.data},Number(settings.maxContextChars||60000)),hashInput=JSON.stringify({input,promptVersion,model:modelBacked?settings.model:options.rulesModel}),inputHash=await sha256(hashInput);
-  if(!options.force){const cached=await findCachedArtifact(options.feature,options.entityType,options.entityId,inputHash,options.currentOnly);if(cached)return {row:cached,cached:true};}
+  if(!options.force){const cached=await findCachedArtifact(options.feature,options.entityType,options.entityId,inputHash,options.currentOnly,options.sensitive);if(cached)return {row:cached,cached:true};}
   let output:T,run:null|{id:string;startedAt:number}=null,provider="clientrecord",model=options.rulesModel;
   if(modelBacked){
     const allowed=await assertAiRunAllowed(options.user);provider=String(allowed.provider);model=String(allowed.model);run=await beginAiRun({feature:options.feature,entityType:options.entityType,entityId:options.entityId,requestedBy:options.user.email,provider,model,promptVersion,sourceCount:options.sources.length,input:hashInput});
@@ -45,7 +45,7 @@ export async function runAiArtifact<T extends {explanation:string;confidence:str
   const artifactId=crypto.randomUUID(),generatedAt=new Date().toISOString(),sources=await Promise.all(options.sources.map(async source=>({...source,hash:await sha256(source.content)})));
   await env.DB.batch([
     env.DB.prepare("UPDATE ai_artifacts SET superseded_by=? WHERE feature=? AND entity_type=? AND entity_id=? AND superseded_by IS NULL").bind(artifactId,options.feature,options.entityType,options.entityId),
-    env.DB.prepare("INSERT INTO ai_artifacts(id,run_id,feature,entity_type,entity_id,review_status,content_json,original_content_json,explanation,confidence,provider,model,prompt_version,rules_version,input_hash,generated_by,generated_at) VALUES (?,?,?,?,?,'Draft',?,?,?,?,?,?,?,?,?,?,?)").bind(artifactId,run?.id||null,options.feature,options.entityType,options.entityId,JSON.stringify(output),JSON.stringify(output),output.explanation,confidenceScore(output.confidence),provider,model,promptVersion,options.rulesVersion,inputHash,options.user.email,generatedAt),
+    env.DB.prepare("INSERT INTO ai_artifacts(id,run_id,feature,entity_type,entity_id,review_status,content_json,original_content_json,explanation,confidence,provider,model,prompt_version,rules_version,input_hash,generated_by,generated_at,sensitive) VALUES (?,?,?,?,?,'Draft',?,?,?,?,?,?,?,?,?,?,?,?)").bind(artifactId,run?.id||null,options.feature,options.entityType,options.entityId,JSON.stringify(output),JSON.stringify(output),output.explanation,confidenceScore(output.confidence),provider,model,promptVersion,options.rulesVersion,inputHash,options.user.email,generatedAt,options.sensitive?1:0),
     ...sources.map(source=>env.DB.prepare("INSERT INTO ai_artifact_sources(artifact_id,source_type,source_id,source_updated_at,content_hash,excerpt) VALUES (?,?,?,?,?,?)").bind(artifactId,source.type,source.id.slice(0,1000),source.updatedAt||null,source.hash,source.excerpt.slice(0,1000))),
   ]);
   return {row:(await artifactById(artifactId))!,cached:false,provider,model,promptVersion};
