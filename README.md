@@ -158,7 +158,7 @@ Prerequisites: `pnpm exec wrangler login` as the account owner (`pnpm exec wrang
 2. **Deploy.** `pnpm install && pnpm run deploy`. The first run applies all migrations to the empty remote D1 and creates the custom domain. Until step 3 is done every signed-in request returns 401 (fail closed).
 3. **Secrets.** Run `pnpm exec wrangler secret put NAME` for each, copying values from the Sites environment:
    - `CF_ACCESS_AUD` (the AUD tag from step 1)
-   - `CRM_ALLOWED_EMAILS`, `CRM_TOKEN_ENCRYPTION_KEY` (must be the **same** key as on Sites, or imported OAuth tokens and unsubscribe links stop working)
+   - `CRM_ALLOWED_EMAILS`, `CRM_TOKEN_ENCRYPTION_KEY` (a fresh key is fine: the export leaves out OAuth tokens and webhook secrets, which are the only data encrypted with it, so you reconnect integrations and recreate webhooks on the new site instead)
    - `RESEND_API_KEY`, `RESEND_FROM_EMAIL`, `RESEND_WEBHOOK_SECRET`
    - `OPENAI_API_KEY`, `APOLLO_API_KEY`
    - `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`
