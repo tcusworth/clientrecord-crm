@@ -18,7 +18,7 @@ export type CustomFieldValue = {
   value: string;
 };
 
-export const customFieldInputName = (id: number) => `customField_${id}`;
+const customFieldInputName = (id: number) => `customField_${id}`;
 
 export function CustomFieldInput({ field, value = "" }: { field: CustomFieldDefinition; value?: string }) {
   const name = customFieldInputName(field.id);

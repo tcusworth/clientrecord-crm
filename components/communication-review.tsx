@@ -5,10 +5,10 @@ import { Building2, Check, Inbox, Link2, MailQuestion, RefreshCw, UserPlus, X } 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import type { Row } from "@/lib/crm-types";
+import { text } from "@/lib/format";
 
-type Row=Record<string,unknown>;
 type Data={items:Row[];contacts:Row[];companies:Row[];deals:Row[]};
-const text=(value:unknown)=>String(value??"");
 const parseList=(value:unknown)=>Array.isArray(value)?value as Row[]:[];
 
 export function CommunicationReviewWorkspace(){

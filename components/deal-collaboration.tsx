@@ -11,9 +11,9 @@ import { MeetingIntelligencePanel } from "@/components/meeting-intelligence";
 import { FollowUpDraftPanel } from "@/components/follow-up-drafts";
 import { AIRecordFieldsPanel } from "@/components/ai-record-fields";
 import { AIProposalPanel } from "@/components/ai-proposals";
+import { Field } from "@/components/workspace-primitives";
+import type { ContactSummary as Contact, Row } from "@/lib/crm-types";
 
-type Row=Record<string,unknown>;
-type Contact={id:number;name:string;email:string;company:string;title:string};
 type HealthComponent={key:string;label:string;weight:number;points:number;evidence:string[];dataGaps:string[]};
 type RelationshipHealth={score:number;band:string;provisional:boolean;confidence:string;confidenceScore:number;components:HealthComponent[];evidence:string[];dataGaps:string[];calculatedAt:string;previousScore:number|null;direction:"New"|"Up"|"Down"|"No change";change:number|null;meaningfulInteractions:Row[];history:Row[]};
 type CoverageFinding={key:string;title:string;detail:string;severity:"Info"|"Warning"|"Critical";reason:string;evidence:string[];role?:string};
@@ -30,7 +30,6 @@ const dealViews=[
 const dollars=(cents:unknown)=>new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",maximumFractionDigits:0}).format(Number(cents||0)/100);
 const when=(value:unknown)=>value?new Date(String(value)).toLocaleString():"";
 const formValues=(event:FormEvent<HTMLFormElement>)=>{event.preventDefault();return Object.fromEntries(new FormData(event.currentTarget).entries())};
-function Field({label,...props}:{label:string}&React.InputHTMLAttributes<HTMLInputElement>){return <label className="grid gap-1 text-sm font-medium">{label}<Input {...props}/></label>}
 function Select({label,children,...props}:{label:string;children:React.ReactNode}&React.SelectHTMLAttributes<HTMLSelectElement>){return <label className="grid gap-1 text-sm font-medium">{label}<select className={selectClass} {...props}>{children}</select></label>}
 function Empty({children}:{children:React.ReactNode}){return <p className="rounded-xl border border-dashed p-5 text-center text-sm text-slate-500">{children}</p>}
 

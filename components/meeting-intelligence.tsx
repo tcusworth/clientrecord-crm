@@ -4,12 +4,11 @@ import { useMemo, useState, type ChangeEvent, type FormEvent } from "react";
 import { CalendarDays, Check, FileText, Import, Sparkles, Upload, Users, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { parseMeetilyImport } from "@/lib/meetily-import";
+import { Field } from "@/components/workspace-primitives";
+import type { ContactSummary as Contact, Row } from "@/lib/crm-types";
 
-type Row=Record<string,unknown>;
-type Contact={id:number;name:string;email:string;company:string;title:string};
 type BriefContent={companyAndAttendeeSummary:string;currentDealPosition:string;lastMeaningfulInteraction:string;unresolvedCommitments:string[];risksAndObjections:string[];stakeholderConcerns:string[];suggestedAgenda:string[];recommendedQuestions:string[];confidence:string;dataGaps:string[];sourcesUsed:string[];freshnessTime:string};
 type Artifact={id:string;meetingKey:string;reviewStatus:string;content:BriefContent;explanation:string;confidence:number;model:string;rulesVersion:string;generatedAt:string;generatedBy:string;reviewedAt:string|null;reviewedBy:string|null;sourceCount:number};
 type Props={dealId:number;meetings:Row[];briefs:Record<string,Artifact|null>;contacts:Contact[];documents:Row[];dealOwner:string;canEdit:boolean;canUpload:boolean;canManageSensitive:boolean;canReview:boolean;busy:boolean;run:(action:string,payload?:Row,message?:string)=>Promise<boolean>};
@@ -18,7 +17,6 @@ const selectClass="h-10 w-full rounded-md border bg-white px-3 text-sm";
 const when=(value:unknown)=>value?new Date(String(value)).toLocaleString():"";
 const inputDate=(value:unknown)=>{const parsed=new Date(String(value||""));return Number.isFinite(parsed.getTime())?new Date(parsed.getTime()-parsed.getTimezoneOffset()*60000).toISOString().slice(0,16):""};
 const lines=(value:unknown)=>{try{const parsed=JSON.parse(String(value||"[]"));return Array.isArray(parsed)?parsed.map(item=>typeof item==="string"?item:String((item as Row).text||"")).filter(Boolean).join("\n"):""}catch{return ""}};
-function Field({label,...props}:{label:string}&React.InputHTMLAttributes<HTMLInputElement>){return <label className="grid gap-1 text-sm font-medium">{label}<Input {...props}/></label>}
 function Select({label,children,...props}:{label:string;children:React.ReactNode}&React.SelectHTMLAttributes<HTMLSelectElement>){return <label className="grid gap-1 text-sm font-medium">{label}<select className={selectClass} {...props}>{children}</select></label>}
 function List({items,empty}:{items:string[];empty:string}){return items.length?<ul className="list-disc space-y-1.5 pl-5 text-sm leading-6 text-slate-700">{items.map((item,index)=><li key={`${index}-${item}`}>{item}</li>)}</ul>:<p className="text-sm text-slate-500">{empty}</p>}
 

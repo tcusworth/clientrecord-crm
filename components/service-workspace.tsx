@@ -7,10 +7,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ContextBlock, Pagination, RecordDrawer, ViewBar, WorkspaceEmpty, WorkspaceError, type WorkspaceDensity, type WorkspaceMode } from "@/components/workspace-primitives";
+import type { Row } from "@/lib/crm-types";
+import { text } from "@/lib/format";
 
-type Row=Record<string,unknown>;
 type Data={account:{email:string};cases:Row[];caseNotes:Row[];companies:Row[];contacts:Row[];deals:Row[];serviceSummary:{open:number;breached:number;unassigned:number}};
-const text=(value:unknown)=>String(value??"");
 const dateTime=(value:unknown)=>value?new Date(text(value)).toLocaleString():"Not set";
 const fieldClass="h-10 w-full rounded-md border bg-white px-3 text-sm";
 

@@ -9,8 +9,8 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 
-export type CommandContact={id:number;firstName:string;lastName:string;email:string;company:string;title:string};
-export type CommandCompany={id:number;name:string;stage:string};
+type CommandContact={id:number;firstName:string;lastName:string;email:string;company:string;title:string};
+type CommandCompany={id:number;name:string;stage:string};
 export type CommandDeal={id:number;name:string;company:string;stage:string;owner:string};
 
 type Props={

@@ -4,8 +4,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Bell, CalendarDays, Check, ChevronRight, RefreshCw, Sparkles, TrendingUp } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import type { Row } from "@/lib/crm-types";
 
-type Row=Record<string,unknown>;
+type QueueItem=Row&{taskType:string;queueLabel:string};
 type TodayData={account:{email:string;role:string};today:{tasks:Row[];dealTasks:Row[];notifications:Row[];hotAccounts:Row[];stalledDeals:Row[];upcomingMeetings:Row[]};reviewItems:Row[];cases:Row[]};
 
 function Panel({children,className=""}:{children:React.ReactNode;className?:string}){return <section className={`console-panel ${className}`}>{children}</section>}
@@ -18,7 +19,7 @@ export function TodayConsole(){
  const complete=async(row:Row)=>{if(row.taskType==="review"){window.dispatchEvent(new CustomEvent("crm:navigate",{detail:"communication-review"}));return}if(row.taskType==="case"){window.dispatchEvent(new CustomEvent("crm:navigate",{detail:"service"}));return}const deal=row.taskType==="deal";await fetch(deal?"/api/sales":"/api/crm",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(deal?{action:"toggleDealTask",id:row.id,completed:true}:{action:"completeTask",id:row.id})});await load()};
  const markAlert=async(id:unknown)=>{await fetch("/api/operations",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"markNotification",id})});await load()};
  const today=new Date().toISOString().slice(0,10);
- const queue=useMemo(()=>data?[...data.today.tasks.map(item=>({...item,taskType:"contact",queueLabel:"Task"})),...data.today.dealTasks.map(item=>({...item,taskType:"deal",queueLabel:"Deal"})),...data.reviewItems.map(item=>({...item,id:`review-${item.id}`,title:item.subject||"Review communication associations",contactName:item.sender_name||item.sender_email,dueDate:item.created_at,taskType:"review",queueLabel:"Review"})),...data.cases.map(item=>({...item,id:`case-${item.id}`,title:item.subject,contactName:item.company_name||item.contact_name,dueDate:item.resolution_due_at||item.created_at,taskType:"case",queueLabel:String(item.priority||"Case")}))].filter(item=>!snoozed.includes(String(item.id))).sort((a,b)=>String(a.dueDate).localeCompare(String(b.dueDate))):[],[data,snoozed]);
+ const queue=useMemo(()=>data?([...data.today.tasks.map(item=>({...item,taskType:"contact",queueLabel:"Task"})),...data.today.dealTasks.map(item=>({...item,taskType:"deal",queueLabel:"Deal"})),...data.reviewItems.map(item=>({...item,id:`review-${item.id}`,title:item.subject||"Review communication associations",contactName:item.sender_name||item.sender_email,dueDate:item.created_at,taskType:"review",queueLabel:"Review"})),...data.cases.map(item=>({...item,id:`case-${item.id}`,title:item.subject,contactName:item.company_name||item.contact_name,dueDate:item.resolution_due_at||item.created_at,taskType:"case",queueLabel:String(item.priority||"Case")}))] as QueueItem[]).filter(item=>!snoozed.includes(String(item.id))).sort((a,b)=>String(a.dueDate).localeCompare(String(b.dueDate))):[],[data,snoozed]);
  if(!data)return <Panel className="p-6">{error||"Loading today’s work…"}</Panel>;
  const t=data.today,overdue=queue.filter(item=>String(item.dueDate)<today),recommendation=overdue[0]||t.stalledDeals[0]||t.hotAccounts[0];
  return <>
