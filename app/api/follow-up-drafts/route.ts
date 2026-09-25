@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { loadAiSettings, providerConfigured } from "@/lib/ai-governance";
+import { canSeeSensitive, loadAiSettings, providerConfigured, visibleArtifactSql } from "@/lib/ai-governance";
 import { aiMode, runAiArtifact } from "@/lib/ai-runner";
 import { audit, can, crmUser, type CRMUser } from "@/lib/crm-auth";
 import { buildDeterministicFollowUpDraft, followUpDraftSchema, normalizeFollowUpDraft, type FollowUpDraft } from "@/lib/follow-up-drafts";
@@ -27,11 +27,13 @@ async function dealContext(id:number){
 
 async function selectedSource(id:number,type:SourceType,sourceId:string,user:CRMUser,allowSensitive:boolean,maxChars:number){
   if(type==="meeting"){
-    const source=await one("SELECT m.*,d.title AS transcript_title FROM deal_meetings m LEFT JOIN client_documents d ON d.id=m.transcript_document_id WHERE m.id=? AND m.deal_id=?",sourceId,id);if(!source)throw new Error("Meeting not found.");
-    const attendees=await rows("SELECT a.*,c.first_name||' '||c.last_name AS contact_name,c.title AS contact_title FROM deal_meeting_attendees a LEFT JOIN contacts c ON c.id=a.contact_id WHERE a.meeting_id=? ORDER BY a.id",sourceId);return {source:{...source,attendees},label:clean(source.subject,240)||"Meeting",transcriptText:""};
+    const row=await one("SELECT m.*,d.title AS transcript_title,d.sensitive AS transcript_sensitive FROM deal_meetings m LEFT JOIN client_documents d ON d.id=m.transcript_document_id WHERE m.id=? AND m.deal_id=?",sourceId,id);if(!row)throw new Error("Meeting not found.");
+    // A sensitive transcript's title only enters the AI context (and marks the draft sensitive) for users who may see it.
+    const {transcript_sensitive,...meeting}=row,sensitiveTitle=Boolean(transcript_sensitive),source=sensitiveTitle&&!canSeeSensitive(user)?{...meeting,transcript_title:null}:meeting;
+    const attendees=await rows("SELECT a.*,c.first_name||' '||c.last_name AS contact_name,c.title AS contact_title FROM deal_meeting_attendees a LEFT JOIN contacts c ON c.id=a.contact_id WHERE a.meeting_id=? ORDER BY a.id",sourceId);return {source:{...source,attendees},label:clean(source.subject,240)||"Meeting",transcriptText:"",sensitive:sensitiveTitle&&canSeeSensitive(user)};
   }
   if(type==="note"){
-    const numeric=Number(sourceId);if(!Number.isInteger(numeric)||numeric<1)throw new Error("Note not found.");const source=await one("SELECT * FROM deal_notes WHERE id=? AND deal_id=?",numeric,id);if(!source)throw new Error("Note not found.");return {source,label:`${clean(source.kind,40)||"Note"} · ${clean(source.created_at,40)}`,transcriptText:""};
+    const numeric=Number(sourceId);if(!Number.isInteger(numeric)||numeric<1)throw new Error("Note not found.");const source=await one("SELECT * FROM deal_notes WHERE id=? AND deal_id=?",numeric,id);if(!source)throw new Error("Note not found.");return {source,label:`${clean(source.kind,40)||"Note"} · ${clean(source.created_at,40)}`,transcriptText:"",sensitive:false};
   }
   const source=await one(`SELECT d.*,v.filename,v.content_type,v.size,v.object_key,v.checksum,v.uploaded_at
     FROM client_documents d JOIN document_versions v ON v.document_id=d.id AND v.version=d.latest_version WHERE d.id=? AND d.deal_id=? AND d.status='Active'`,sourceId,id);if(!source)throw new Error("Transcript document not found.");
@@ -40,7 +42,7 @@ async function selectedSource(id:number,type:SourceType,sourceId:string,user:CRM
   if((typeName.startsWith("text/")||typeName==="application/csv")&&size<=Math.min(1_000_000,maxChars*4)){
     const object=await env.BUCKET.get(String(source.object_key));if(object)transcriptText=(await object.text()).slice(0,maxChars);
   }
-  return {source,label:clean(source.title,240)||clean(source.filename,240)||"Transcript",transcriptText};
+  return {source,label:clean(source.title,240)||clean(source.filename,240)||"Transcript",transcriptText,sensitive:Boolean(source.sensitive)};
 }
 
 async function generate(id:number,type:SourceType,sourceId:string,user:CRMUser,force:boolean){
@@ -51,7 +53,7 @@ async function generate(id:number,type:SourceType,sourceId:string,user:CRMUser,f
     ...(context.company?[{type:"company",id:String(context.company.id),updatedAt:clean(context.company.updated_at),value:context.company,excerpt:clean(context.company.name,240)}]:[]),
     {type:"stakeholders",id:context.stakeholders.map(item=>item.id).join(",")||"none",updatedAt:clean(context.stakeholders[0]?.updated_at||context.deal.updated_at),value:context.stakeholders,excerpt:context.stakeholders.map(item=>`${clean(item.contact_name,120)} (${clean(item.role,80)})`).join(", ")},
   ];
-  const result=await runAiArtifact<FollowUpDraft>({feature:"follow-up-draft",entityType:"deal",entityId,user,force,instruction:"Draft a human-reviewed follow-up. Use only these records.",data:{sourceType:type,sourceLabel:selected.label,deal:context.deal,company:context.company,stakeholders:context.stakeholders,selectedSource:selected.source,transcriptText:selected.transcriptText},rulesModel:"follow-up-rules-v1",rulesVersion:"follow-up-draft-v1",sources:sourceGroups.map(({value,...source})=>({...source,content:JSON.stringify(value)})),
+  const result=await runAiArtifact<FollowUpDraft>({feature:"follow-up-draft",entityType:"deal",entityId,user,force,instruction:"Draft a human-reviewed follow-up. Use only these records.",data:{sourceType:type,sourceLabel:selected.label,deal:context.deal,company:context.company,stakeholders:context.stakeholders,selectedSource:selected.source,transcriptText:selected.transcriptText},rulesModel:"follow-up-rules-v1",rulesVersion:"follow-up-draft-v1",sensitive:selected.sensitive,sources:sourceGroups.map(({value,...source})=>({...source,content:JSON.stringify(value)})),
     model:{schema:followUpDraftSchema,schemaName:"clientrecord_follow_up_draft",maxOutputTokens:2200,normalize:normalizeFollowUpDraft,emptyMessage:"The AI provider returned no draft.",system:"Create a concise, professional B2B follow-up draft using only the supplied ClientRecord CRM evidence. Never invent decisions, commitments, owners, or due dates. Use an empty string or data gap when evidence is missing. The user will review this draft; do not claim it was sent."},
     rules:()=>buildDeterministicFollowUpDraft({sourceType:type,source:selected.source,deal:context.deal,company:context.company,stakeholders:context.stakeholders,transcriptText:selected.transcriptText}),
     finalize:draft=>type==="transcript"&&!selected.transcriptText&&!draft.dataGaps.includes("The transcript file format is not readable as plain text.")?{...draft,dataGaps:[...draft.dataGaps,"The transcript file format is not readable as plain text; the draft used document metadata and deal context."]}:draft});
@@ -61,7 +63,7 @@ async function generate(id:number,type:SourceType,sourceId:string,user:CRMUser,f
 
 export async function GET(request:Request){
   const user=await crmUser(request),error=denied(user,"ai.view");if(error||!user)return error;
-  try{const id=dealId(new URL(request.url).searchParams.get("dealId"));await dealContext(id);const drafts=await rows("SELECT a.*,(SELECT count(*) FROM ai_artifact_sources s WHERE s.artifact_id=a.id) AS source_count FROM ai_artifacts a WHERE a.feature='follow-up-draft' AND a.entity_type='deal' AND a.entity_id LIKE ? AND a.superseded_by IS NULL ORDER BY a.generated_at DESC",`${id}:%`);return Response.json({drafts:drafts.map(item=>artifact(item)),providerConfigured:providerConfigured(),settings:await loadAiSettings(),permissions:{generate:can(user,"ai.generate"),review:can(user,"ai.review"),createTasks:can(user,"records.edit")}})}catch(error){return Response.json({error:error instanceof Error?error.message:"Follow-up drafts could not load."},{status:400})}
+  try{const id=dealId(new URL(request.url).searchParams.get("dealId"));await dealContext(id);const drafts=await rows(`SELECT a.*,(SELECT count(*) FROM ai_artifact_sources s WHERE s.artifact_id=a.id) AS source_count FROM ai_artifacts a WHERE a.feature='follow-up-draft' AND a.entity_type='deal' AND a.entity_id LIKE ? AND a.superseded_by IS NULL AND ${visibleArtifactSql(user)} ORDER BY a.generated_at DESC`,`${id}:%`);return Response.json({drafts:drafts.map(item=>artifact(item)),providerConfigured:providerConfigured(),settings:await loadAiSettings(),permissions:{generate:can(user,"ai.generate"),review:can(user,"ai.review"),createTasks:can(user,"records.edit")}})}catch(error){return Response.json({error:error instanceof Error?error.message:"Follow-up drafts could not load."},{status:400})}
 }
 
 export async function POST(request:Request){
@@ -71,7 +73,7 @@ export async function POST(request:Request){
     if(action==="generate"){
       const error=denied(user,"ai.generate");if(error)return error;const type=clean(body.sourceType,20) as SourceType;if(!["meeting","note","transcript"].includes(type))throw new Error("Choose a meeting, note, or transcript.");return Response.json(await generate(id,type,identifier(body.sourceId),user,Boolean(body.force)));
     }
-    const artifactId=identifier(body.artifactId),record=await one("SELECT * FROM ai_artifacts WHERE id=? AND feature='follow-up-draft' AND entity_type='deal' AND entity_id LIKE ?",artifactId,`${id}:%`);if(!record)throw new Error("Follow-up draft not found.");
+    const artifactId=identifier(body.artifactId),record=await one(`SELECT * FROM ai_artifacts WHERE id=? AND feature='follow-up-draft' AND entity_type='deal' AND entity_id LIKE ? AND ${visibleArtifactSql(user,"")}`,artifactId,`${id}:%`);if(!record)throw new Error("Follow-up draft not found.");
     if(action==="review"){
       const error=denied(user,"ai.review");if(error)return error;const status=clean(body.status,20);if(!["Accepted","Edited","Rejected"].includes(status))throw new Error("Choose accepted, edited, or rejected.");let content=String(record.content_json);if(status==="Edited")content=JSON.stringify(normalizeFollowUpDraft(body.content));const before={reviewStatus:record.review_status,content:parse(record.content_json)},after={reviewStatus:status,content:parse(content)};
       await env.DB.batch([env.DB.prepare("INSERT INTO ai_feedback_events(artifact_id,action,before_json,after_json,comment,actor,created_at) VALUES (?,?,?,?,?,?,datetime('now'))").bind(artifactId,status,JSON.stringify(before),JSON.stringify(after),clean(body.comment,4000),user.email),env.DB.prepare("UPDATE ai_artifacts SET review_status=?,content_json=?,reviewed_by=?,reviewed_at=datetime('now') WHERE id=?").bind(status,content,user.email,artifactId)]);await audit(user,"ai.follow_up.review","ai_artifact",artifactId,`${status} follow-up draft`,{before,after});return Response.json({ok:true,artifact:artifact(await one("SELECT a.*,(SELECT count(*) FROM ai_artifact_sources s WHERE s.artifact_id=a.id) AS source_count FROM ai_artifacts a WHERE a.id=?",artifactId))});

@@ -8,7 +8,7 @@ import { communicationCandidates, queueCommunicationReview } from "@/lib/communi
 type Row=Record<string,unknown>;type Contact={id:number;email:string;companyId:number|null;company:string};
 const clean=(value:unknown,max=1000)=>String(value??"").trim().slice(0,max);
 export async function POST(request:Request){
- const user=await crmUser(request);if(!user)return Response.json({error:"Sign in is required."},{status:401});if(!can(user,"records.edit"))return Response.json({error:"Edit access is required."},{status:403});
+ const user=await crmUser(request);if(!user)return Response.json({error:"Sign in is required."},{status:401});if(!can(user,"integrations.manage"))return Response.json({error:"Integration management permission is required to sync the connected mailbox."},{status:403});
  try{
   const account=await env.DB.prepare("SELECT * FROM integration_accounts WHERE provider='microsoft'").first<Row>();if(!account)return Response.json({error:"Connect Microsoft 365 first."},{status:409});let access=await decryptToken(String(account.access_token)),refresh=await decryptToken(String(account.refresh_token));
   if(new Date(String(account.expires_at)).getTime()<Date.now()+120000){const next=await refreshMicrosoft(refresh);access=String(next.access_token);refresh=String(next.refresh_token||refresh);await env.DB.prepare("UPDATE integration_accounts SET access_token=?,refresh_token=?,expires_at=?,updated_at=datetime('now') WHERE provider='microsoft'").bind(await encryptToken(access),await encryptToken(refresh),new Date(Date.now()+Number(next.expires_in||3600)*1000).toISOString()).run();}

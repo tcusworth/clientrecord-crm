@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { loadAiSettings, providerConfigured } from "@/lib/ai-governance";
+import { loadAiSettings, providerConfigured, visibleArtifactSql } from "@/lib/ai-governance";
 import { aiMode, runAiArtifact } from "@/lib/ai-runner";
 import {
   aiFieldDefinitions,
@@ -728,7 +728,7 @@ export async function GET(request: Request) {
         String(id),
       ),
       one(
-        "SELECT a.*,(SELECT count(*) FROM ai_artifact_sources s WHERE s.artifact_id=a.id) AS source_count FROM ai_artifacts a WHERE a.feature=? AND a.entity_type=? AND a.entity_id=? AND a.superseded_by IS NULL ORDER BY a.generated_at DESC LIMIT 1",
+        `SELECT a.*,(SELECT count(*) FROM ai_artifact_sources s WHERE s.artifact_id=a.id) AS source_count FROM ai_artifacts a WHERE a.feature=? AND a.entity_type=? AND a.entity_id=? AND a.superseded_by IS NULL AND ${visibleArtifactSql(user)} ORDER BY a.generated_at DESC LIMIT 1`,
         feature(type),
         type,
         String(id),
@@ -791,7 +791,7 @@ export async function POST(request: Request) {
       if (!["Accepted", "Rejected"].includes(status))
         throw new Error("Choose accepted or rejected.");
       const record = await one(
-        "SELECT * FROM ai_artifacts WHERE id=? AND feature=? AND entity_type=? AND entity_id=?",
+        `SELECT * FROM ai_artifacts WHERE id=? AND feature=? AND entity_type=? AND entity_id=? AND ${visibleArtifactSql(user, "")}`,
         artifactId,
         feature(type),
         type,

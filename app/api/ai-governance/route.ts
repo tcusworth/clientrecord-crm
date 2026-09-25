@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { aiFeatures, loadAiSettings, providerConfigured } from "@/lib/ai-governance";
+import { aiFeatures, loadAiSettings, providerConfigured, visibleArtifactSql } from "@/lib/ai-governance";
 import { audit, can, crmUser, type CRMUser } from "@/lib/crm-auth";
 import { normalizeFollowUpDraft } from "@/lib/follow-up-drafts";
 import { normalizeProposalDraft } from "@/lib/ai-proposals";
@@ -24,9 +24,9 @@ export async function GET(request:Request){
     env.DB.prepare("SELECT count(*) AS total,sum(CASE WHEN status='Failed' THEN 1 ELSE 0 END) AS failed,sum(CASE WHEN started_at>=date('now') THEN 1 ELSE 0 END) AS today,sum(CASE WHEN started_at>=datetime('now','-30 days') THEN 1 ELSE 0 END) AS month FROM ai_runs").first<Row>(),
     configure?env.DB.prepare("SELECT id,feature,version,name,response_schema AS responseSchema,status,created_by AS createdBy,created_at AS createdAt,activated_by AS activatedBy,activated_at AS activatedAt FROM ai_prompt_versions ORDER BY feature,version DESC").all<Row>():Promise.resolve({results:[] as Row[]}),
     env.DB.prepare("SELECT id,feature,entity_type AS entityType,entity_id AS entityId,status,provider,model,prompt_version AS promptVersion,requested_by AS requestedBy,source_count AS sourceCount,latency_ms AS latencyMs,estimated_tokens AS estimatedTokens,error,started_at AS startedAt,completed_at AS completedAt FROM ai_runs ORDER BY started_at DESC LIMIT 50").all<Row>(),
-    env.DB.prepare(`SELECT a.id,a.feature,a.entity_type AS entityType,a.entity_id AS entityId,a.review_status AS reviewStatus,a.content_json AS contentJson,a.explanation,a.confidence,a.provider,a.model,a.prompt_version AS promptVersion,a.rules_version AS rulesVersion,a.generated_by AS generatedBy,a.generated_at AS generatedAt,a.reviewed_by AS reviewedBy,a.reviewed_at AS reviewedAt,(SELECT count(*) FROM ai_artifact_sources s WHERE s.artifact_id=a.id) AS sourceCount FROM ai_artifacts a ${review?"":"WHERE a.review_status='Accepted'"} ORDER BY a.generated_at DESC LIMIT 50`).all<Row>(),
+    env.DB.prepare(`SELECT a.id,a.feature,a.entity_type AS entityType,a.entity_id AS entityId,a.review_status AS reviewStatus,a.content_json AS contentJson,a.explanation,a.confidence,a.provider,a.model,a.prompt_version AS promptVersion,a.rules_version AS rulesVersion,a.generated_by AS generatedBy,a.generated_at AS generatedAt,a.reviewed_by AS reviewedBy,a.reviewed_at AS reviewedAt,(SELECT count(*) FROM ai_artifact_sources s WHERE s.artifact_id=a.id) AS sourceCount FROM ai_artifacts a WHERE ${visibleArtifactSql(user)}${review?"":" AND a.review_status='Accepted'"} ORDER BY a.generated_at DESC LIMIT 50`).all<Row>(),
   ]);
-  const pending=await env.DB.prepare("SELECT count(*) AS count FROM ai_artifacts WHERE review_status='Draft'").first<{count:number}>();
+  const pending=await env.DB.prepare(`SELECT count(*) AS count FROM ai_artifacts WHERE review_status='Draft' AND ${visibleArtifactSql(user,"")}`).first<{count:number}>();
   return Response.json({account:{email:user.email,role:user.role},permissions:{view:true,generate:can(user,"ai.generate"),review,configure},providerConfigured:providerConfigured(),settings,features:aiFeatures,prompts:prompts.results,runs:runs.results,artifacts:artifacts.results,usage:{total:Number(usage?.total||0),today:Number(usage?.today||0),month:Number(usage?.month||0),failed:Number(usage?.failed||0),pendingReview:Number(pending?.count||0)}});
 }
 
@@ -69,7 +69,7 @@ export async function POST(request:Request){
   if(action==="reviewArtifact"){
     const error=denied(user,"ai.review");if(error)return error;const id=String(body.id||""),status=String(body.status||"");
     if(!["Accepted","Edited","Rejected"].includes(status))return Response.json({error:"Choose Accepted, Edited, or Rejected."},{status:400});
-    const artifact=await env.DB.prepare("SELECT id,feature,review_status AS reviewStatus,content_json AS contentJson FROM ai_artifacts WHERE id=?").bind(id).first<Row>();if(!artifact)return Response.json({error:"AI result was not found."},{status:404});
+    const artifact=await env.DB.prepare(`SELECT id,feature,review_status AS reviewStatus,content_json AS contentJson FROM ai_artifacts WHERE id=? AND ${visibleArtifactSql(user,"")}`).bind(id).first<Row>();if(!artifact)return Response.json({error:"AI result was not found."},{status:404});
     let contentJson=String(artifact.contentJson||"{}");if(status==="Edited"){const normalize=editableFeatures[String(artifact.feature)];if(!normalize)return Response.json({error:"This AI result cannot be edited; accept or reject it."},{status:400});try{contentJson=JSON.stringify(normalize(JSON.parse(String(body.contentJson||"{}"))))}catch{return Response.json({error:"Edited content must be valid JSON."},{status:400})}}
     const before=JSON.stringify({reviewStatus:artifact.reviewStatus,contentJson:artifact.contentJson}),after=JSON.stringify({reviewStatus:status,contentJson});
     await env.DB.batch([
