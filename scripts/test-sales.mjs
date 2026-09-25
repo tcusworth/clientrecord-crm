@@ -14,7 +14,7 @@ assert.equal(sqlite.prepare("SELECT name FROM deals WHERE id=1").get().name,"Leg
 assert.deepEqual({...sqlite.prepare("SELECT pipeline_key,stage_key FROM deals WHERE id=1").get()},{pipeline_key:"default",stage_key:null});
 assert.equal(sqlite.prepare("SELECT temperature FROM companies WHERE id=1").get().temperature,"Cold");
 applyMigrations(sqlite,migrations.slice(upgradeIndex+1));
-const env={DB:createD1(sqlite),CRM_ALLOWED_EMAILS:"owner@example.com"};
+const env={DB:createD1(sqlite),CRM_ALLOWED_EMAILS:"owner@example.com",TRUST_PLATFORM_IDENTITY_HEADERS:"true"};
 const load=createModuleLoader(env);
 const {POST,GET}=load("app/api/sales/route.ts");
 const rules=load("lib/sales-rules.ts");

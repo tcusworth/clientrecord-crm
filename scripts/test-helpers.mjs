@@ -101,6 +101,7 @@ export function createModuleLoader(env = {}) {
 /** Convenience: all migrations + D1 shim + env + loader, the common route-test setup. */
 export function createTestContext(envOverrides = {}) {
   const sqlite = createSqlite();
-  const env = { DB: createD1(sqlite), CRM_ALLOWED_EMAILS: "owner@example.com", ...envOverrides };
+  // Route tests authenticate with oai-authenticated-* headers, which are only honoured when opted in.
+  const env = { DB: createD1(sqlite), CRM_ALLOWED_EMAILS: "owner@example.com", TRUST_PLATFORM_IDENTITY_HEADERS: "true", ...envOverrides };
   return { sqlite, env, load: createModuleLoader(env) };
 }

@@ -10,6 +10,7 @@ declare namespace Cloudflare {
     CF_ACCESS_TEAM_DOMAIN?: string;
     CF_ACCESS_AUD?: string;
     CF_ACCESS_ENFORCED?: string;
+    TRUST_PLATFORM_IDENTITY_HEADERS?: string;
     MS_CLIENT_ID?: string;
     MS_CLIENT_SECRET?: string;
     MS_TENANT_ID?: string;
