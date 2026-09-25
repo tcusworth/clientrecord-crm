@@ -23,6 +23,8 @@
   "workers_dev": false,
   "preview_urls": false,
   "observability": { "enabled": true },
+  // Workers Paid: allow up to 30s CPU per request (the free plan caps at 10ms, which this app exceeds).
+  "limits": { "cpu_ms": 30000 },
   "d1_databases": [
     {
       "binding": "DB",
