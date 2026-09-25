@@ -51,7 +51,9 @@ for (const [id, type] of [["safe-pdf", "application/pdf"], ["safe-png", "image/p
   const response = await download(id);
   assert.equal(response.headers.get("content-type"), type);
   assert.match(response.headers.get("content-disposition"), /^inline;/, `${id} still previews inline`);
-  if (type !== "application/pdf") assert.match(response.headers.get("content-security-policy") || "", /default-src 'none'/);
+  const csp = response.headers.get("content-security-policy") || "";
+  if (type === "application/pdf") { assert.match(csp, /frame-ancestors 'none'/); assert.doesNotMatch(csp, /object-src|sandbox/, "inline PDFs must not block the browser's PDF viewer"); }
+  else assert.match(csp, /default-src 'none'/);
 }
 
 // 2. Proposal share tokens are only visible to people who can send proposals.

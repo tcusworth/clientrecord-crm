@@ -14,8 +14,9 @@ async function auth(request:Request,permission:"documents.view"|"documents.uploa
 }
 async function record(id:string){return env.DB.prepare(`SELECT d.*,v.id AS version_id,v.filename,v.content_type,v.size,v.object_key,v.checksum,v.uploaded_by,v.uploaded_at
   FROM client_documents d JOIN document_versions v ON v.document_id=d.id AND v.version=d.latest_version WHERE d.id=?`).bind(id).first<Row>()}
-// Inline PDFs skip the CSP because some browsers' built-in PDF viewers break under it; PDFs cannot run page script on this origin.
-function headers(filename:string,type:string,inline:boolean){const disposition=`${inline?"inline":"attachment"}; filename="${safeFilename(filename).replaceAll('"',"")}"`;return {"content-type":type||"application/octet-stream","content-disposition":disposition,"x-content-type-options":"nosniff","cache-control":"private, no-store",...(inline&&type==="application/pdf"?{}:{"content-security-policy":"default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox"})}}
+// Inline PDFs get a CSP without object-src/sandbox (it replaces the site-wide header, which sets object-src 'none'), because
+// browsers' built-in PDF viewers break under those; PDFs cannot run page script on this origin. Framing stays blocked.
+function headers(filename:string,type:string,inline:boolean){const disposition=`${inline?"inline":"attachment"}; filename="${safeFilename(filename).replaceAll('"',"")}"`;return {"content-type":type||"application/octet-stream","content-disposition":disposition,"x-content-type-options":"nosniff","cache-control":"private, no-store","content-security-policy":inline&&type==="application/pdf"?"frame-ancestors 'none'; base-uri 'none'; form-action 'none'":"default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox"}}
 
 export async function GET(request:Request){
   const access=await auth(request);if(!access.user)return access.response;const url=new URL(request.url),documentId=clean(url.searchParams.get("id"),80);

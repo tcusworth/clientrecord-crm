@@ -75,6 +75,8 @@ OAuth redirect URIs follow `https://<host>/api/{google,microsoft,quickbooks}/cal
 
 The resolved email must be in `CRM_ALLOWED_EMAILS` (owner) or an active team member; roles map to permissions in `lib/crm-auth.ts`.
 
+> **Deployment check:** without Cloudflare Access, anyone who can send requests straight to the Worker (for example through a `*.workers.dev` URL or another route that bypasses the Sites platform) can claim any identity with those headers. Either make sure the Worker is only reachable through Sites, or configure Cloudflare Access and set `CF_ACCESS_ENFORCED=true`.
+
 ### API keys and OpenAPI
 
 Machine clients use scoped API keys (`Authorization: Bearer cr_live_…`), created in the app and stored only as SHA-256 hashes. Scopes: `records.read`, `records.write`, `leads.capture`, `inbox.capture`, `meetings.import`, `jobs.run`, or `*`. The OpenAPI 3.1 description of the public API (`/api/v1/records`, Meetily import, scheduled jobs via `/api/operations`) is served at `GET /api/openapi`.

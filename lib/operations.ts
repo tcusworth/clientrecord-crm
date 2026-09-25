@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { fromEmail, resend, resendConfigured, sendingIdentity } from "@/lib/resend";
 import { runCustomerSuccessAlerts } from "@/lib/customer-success";
 import { DEFAULT_OWNER_EMAIL } from "@/lib/crm-auth";
+import { escapeHtml } from "@/lib/email-templates";
 
 type Row = Record<string, unknown>;
 const json = (value: unknown) => JSON.stringify(value, (key, item) => /token|secret/i.test(key) ? "[redacted]" : item).slice(0, 32000);
@@ -42,7 +43,8 @@ export async function runDueAutomations(actor = "system") {
           if (blocked) { await env.DB.prepare("UPDATE automation_enrollments SET status='Suppressed',stopped_reason='Contact is unsubscribed or suppressed',completed_at=datetime('now') WHERE id=?").bind(row.id).run(); continue; }
           if (!resendConfigured()) throw new Error("Resend is not configured");
           const identity = await sendingIdentity();
-          const body = String(step.body||"").replaceAll("{{first_name}}",String(row.firstName||"there"));
+          // Step bodies are authored as plain text: escape the body and merge values before converting newlines to <br>.
+          const body = escapeHtml(String(step.body||"")).replaceAll("{{first_name}}",escapeHtml(String(row.firstName||"there")));
           const sent = await resend("/emails",{method:"POST",body:JSON.stringify({from:fromEmail(identity),to:[row.email],reply_to:identity.replyToEmail||undefined,subject:step.subject,html:`<div style=\"font:16px Arial;line-height:1.6\">${body.replaceAll("\n","<br>")}</div>`})}) as Row;
           await Promise.all([
             env.DB.prepare("INSERT INTO activities(contact_id,type,note,happened_at) VALUES (?,'Automated email',?,datetime('now'))").bind(row.contactId,`Sequence email: ${step.subject}`).run(),

@@ -14,10 +14,10 @@ export type EmailBrand = { businessName?: string; fromName?: string; physicalAdd
 
 const firstName = "{{{contact.first_name|there}}}";
 const unsubscribe = "{{{RESEND_UNSUBSCRIBE_URL}}}";
-const escapeHtml = (value: string) => value.replace(/[&<>"]/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;" })[char] || char);
+export const escapeHtml = (value: string) => value.replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" })[char] || char);
 // Sending domains are usually a mail subdomain (news.example.com); link to the root site instead.
-const websiteFor = (sendingDomain = "") => { const host = sendingDomain.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "").replace(/^(mail|email|news|newsletter|send|mg|em|updates|marketing)\./, ""); return host ? `https://${host}` : ""; };
-const button = (label: string, href: string) => href ? `<table role="presentation" cellspacing="0" cellpadding="0"><tr><td style="border-radius:8px;background:#3968ff"><a href="${href}" style="display:inline-block;padding:13px 22px;color:#ffffff;font:700 14px Arial,sans-serif;text-decoration:none">${label}</a></td></tr></table>` : "";
+const websiteFor = (sendingDomain = "") => { const host = sendingDomain.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "").replace(/^(mail|email|news|newsletter|send|mg|em|updates|marketing)\./, ""); return /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/.test(host) ? `https://${host}` : ""; };
+const button = (label: string, href: string) => href ? `<table role="presentation" cellspacing="0" cellpadding="0"><tr><td style="border-radius:8px;background:#3968ff"><a href="${escapeHtml(href)}" style="display:inline-block;padding:13px 22px;color:#ffffff;font:700 14px Arial,sans-serif;text-decoration:none">${label}</a></td></tr></table>` : "";
 const imageBlock = (label: string, height = 220) => `<table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td height="${height}" align="center" style="height:${height}px;background:#e7ecf6;color:#71809b;font:700 13px Arial,sans-serif;letter-spacing:.08em;text-transform:uppercase">${label}</td></tr></table>`;
 
 export function buildEmailTemplates(brand: EmailBrand = {}): EmailTemplate[] {
