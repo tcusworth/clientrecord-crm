@@ -41,7 +41,7 @@ next-env.d.ts
 *.tsbuildinfo
 /dist/
 /.wrangler/
-# Checkout-local execution profile and tool state; never publish them.
+# Legacy OpenAI Sites local pnpm store/tool state (older checkouts may still have it); never publish.
 /.sites-runtime/
 /.agents/
 /.codex/

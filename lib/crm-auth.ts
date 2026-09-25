@@ -48,10 +48,12 @@ export async function crmUser(request: Request): Promise<CRMUser | null> {
   let id = accessIdentity?.id;
   let email = accessIdentity?.email;
 
-  // Sites identity headers are spoofable by anyone who can reach the origin directly. Trust them only when
-  // Cloudflare Access is not configured (the hosting platform injects them), or when Access is configured but
-  // CF_ACCESS_ENFORCED is explicitly "false" (staged-rollout escape hatch). CF_ACCESS_ENFORCED=true always rejects.
+  // Platform identity headers (oai-authenticated-*, injected by OpenAI Sites) are spoofable by anyone who can reach
+  // the origin directly, so they are opt-in: trusted only when TRUST_PLATFORM_IDENTITY_HEADERS is exactly "true" AND
+  // either Cloudflare Access is not configured, or Access is configured but CF_ACCESS_ENFORCED is explicitly "false"
+  // (staged-rollout escape hatch). CF_ACCESS_ENFORCED=true always rejects. Otherwise only a verified Access JWT counts.
   if (!id || !email) {
+    if (String(env.TRUST_PLATFORM_IDENTITY_HEADERS || "").trim() !== "true") return null;
     const enforced = String(env.CF_ACCESS_ENFORCED || "").trim().toLowerCase(), accessConfigured = Boolean(String(env.CF_ACCESS_TEAM_DOMAIN || "").trim() && String(env.CF_ACCESS_AUD || "").trim());
     if (enforced === "true" || (accessConfigured && enforced !== "false")) return null;
     id = request.headers.get("oai-authenticated-user-id") || undefined;

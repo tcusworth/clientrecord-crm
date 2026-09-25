@@ -17,9 +17,14 @@ try{
   assert.equal(await auth.crmUser(new Request("https://crm.example.com/api/crm")),null,"non-local hosts never bypass");
 }finally{if(originalNodeEnv===undefined)delete process.env.NODE_ENV;else process.env.NODE_ENV=originalNodeEnv}
 
-// 2. Sites identity headers: trusted only when Access is unconfigured, or explicitly relaxed with CF_ACCESS_ENFORCED=false.
+// 2. Platform identity headers: opt-in via TRUST_PLATFORM_IDENTITY_HEADERS="true", and then trusted only when Access is
+// unconfigured, or explicitly relaxed with CF_ACCESS_ENFORCED=false.
 const headerUser=()=>auth.crmUser(new Request("https://crm.example.com/api/crm",{headers:sitesHeaders("owner@example.com")}));
-reset();assert.equal((await headerUser())?.role,"owner","Access not configured: platform headers trusted");
+reset();delete env.TRUST_PLATFORM_IDENTITY_HEADERS;assert.equal(await headerUser(),null,"flag unset (default): headers ignored");
+for(const value of ["false","TRUE","1","yes"," "]){env.TRUST_PLATFORM_IDENTITY_HEADERS=value;assert.equal(await headerUser(),null,`flag ${JSON.stringify(value)}: headers ignored`);}
+env.CF_ACCESS_ENFORCED="false";env.TRUST_PLATFORM_IDENTITY_HEADERS="false";assert.equal(await headerUser(),null,"ENFORCED=false alone never enables header trust");
+reset();env.TRUST_PLATFORM_IDENTITY_HEADERS="true";
+assert.equal((await headerUser())?.role,"owner","flag on, Access not configured: platform headers trusted");
 env.CF_ACCESS_ENFORCED="true";assert.equal(await headerUser(),null,"ENFORCED=true rejects headers");
 reset();env.CF_ACCESS_TEAM_DOMAIN="https://team.cloudflareaccess.com";env.CF_ACCESS_AUD="aud";assert.equal(await headerUser(),null,"Access configured, ENFORCED unset: headers rejected");
 env.CF_ACCESS_ENFORCED="FALSE";assert.equal((await headerUser())?.role,"owner","Access configured, ENFORCED=false: escape hatch");
@@ -83,4 +88,4 @@ try{
   for(let i=0;i<10;i++)await unsub({email:"x@example.com",token:"bad"},"192.0.2.50");assert.equal((await unsub({email:"x@example.com",token:"bad"},"192.0.2.50")).status,429,"unsubscribe is limited to 10/min");
 }finally{Date.now=realNow}
 
-console.log("PASS: dev-only localhost bypass, Sites header trust rules, API key scope permissions, API key scope validation, signed unsubscribe tokens, and D1 rate limiting.");
+console.log("PASS: dev-only localhost bypass, opt-in platform header trust rules, API key scope permissions, API key scope validation, signed unsubscribe tokens, and D1 rate limiting.");

@@ -1,0 +1,45 @@
+{
+  // Cloudflare Worker config for ClientRecord CRM (account: Flatirons Creative Studio).
+  // `vinext build` (via @cloudflare/vite-plugin) reads this file and writes the deployable
+  // config to dist/server/wrangler.json plus a .wrangler/deploy/config.json redirect, so a
+  // plain `wrangler deploy` (no --config) ships the built Worker. See README "Hosting on Cloudflare".
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "clientrecord-crm",
+  "account_id": "87c67bb166f67a7ee2d751d04ed1fcb5",
+  "main": "vinext/server/fetch-handler",
+  "compatibility_date": "2026-05-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "dist/client",
+    "not_found_handling": "none",
+    "binding": "ASSETS"
+  },
+  // Only reachable through the custom domain, which sits behind Cloudflare Access.
+  // No *.workers.dev URL and no preview URLs, so nothing bypasses Access.
+  "routes": [
+    { "pattern": "clientrecordcrm.com", "custom_domain": true },
+    { "pattern": "new.clientrecordcrm.com", "custom_domain": true }
+  ],
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": { "enabled": true },
+  // Workers Paid: allow up to 30s CPU per request (the free plan caps at 10ms, which this app exceeds).
+  "limits": { "cpu_ms": 30000 },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "clientrecord-crm-db",
+      "database_id": "589469ce-0064-4636-a072-188d33a4f910",
+      "migrations_dir": "drizzle"
+    }
+  ],
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "clientrecord-crm-files" }],
+  // Non-secret settings. CF_ACCESS_AUD is deliberately NOT here: it is set per Access
+  // application with `wrangler secret put CF_ACCESS_AUD`, so `wrangler deploy` never
+  // overwrites it. Until it is set, CF_ACCESS_ENFORCED=true makes every request fail closed.
+  // Everything else sensitive (Resend, OAuth, OpenAI, ...) is a secret too; see README.
+  "vars": {
+    "CF_ACCESS_TEAM_DOMAIN": "https://tcusworth.cloudflareaccess.com",
+    "CF_ACCESS_ENFORCED": "true"
+  }
+}
