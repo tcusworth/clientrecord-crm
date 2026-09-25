@@ -79,7 +79,31 @@ The resolved email must be in `CRM_ALLOWED_EMAILS` (owner) or an active team mem
 
 ### API keys and OpenAPI
 
-Machine clients use scoped API keys (`Authorization: Bearer cr_live_…`), created in the app and stored only as SHA-256 hashes. Scopes: `records.read`, `records.write`, `leads.capture`, `inbox.capture`, `meetings.import`, `jobs.run`, or `*`. The OpenAPI 3.1 description of the public API (`/api/v1/records`, Meetily import, scheduled jobs via `/api/operations`) is served at `GET /api/openapi`.
+Machine clients use scoped API keys (`Authorization: Bearer cr_live_…`), created in the app and stored only as SHA-256 hashes. Scopes: `records.read`, `records.write`, `leads.capture`, `inbox.capture`, `meetings.import`, `jobs.run`, `backups.export`, or `*`. Only owners can create `*` and `backups.export` keys, and `*` does not grant `backups.export`. The OpenAPI 3.1 description of the public API (`/api/v1/records`, Meetily import, scheduled jobs via `/api/operations`) is served at `GET /api/openapi`.
+
+## Data export & migration
+
+`GET /api/backup-export` exports everything needed to move the CRM to another Cloudflare account (D1 + R2). It is owner-only: a signed-in owner, or an API key that lists the `backups.export` scope (only owners can create one; `*` keys do not qualify). Modes: `?part=tables`, `?table=<name>&offset=&limit=` (JSON pages, ≤1000 rows), `?table=<name>&format=csv`, `?part=manifest` (every R2 object the data references: document versions and field-capture media) and `?object=<key>` (only keys listed in the manifest). Tables are discovered from `sqlite_master`; internal tables and the denylist in `lib/backup-export.ts` (`BACKUP_EXPORT_EXCLUDED_TABLES`: OAuth state, rate limits, undo log, encrypted integration tokens, webhook endpoints/deliveries, old backup snapshots) are skipped, so integrations and webhooks must be reconnected after the move. `api_keys` is kept (hashes only), so existing clients such as Meetily keep working.
+
+1. **Create an export key.** As an owner, in Settings → API keys create a key with scope `backups.export`. Revoke it when the migration is done.
+2. **Create a Cloudflare Access service token.** `clientrecordcrm.com` is behind Cloudflare Access, so a script can't reach it with the API key alone. In Zero Trust → Access → Service Auth, create a service token, then add a policy with action **Service Auth** that includes that token to the application protecting the site.
+3. **Export from the live site** (Node 22, no extra dependencies; re-run to resume, it skips objects already downloaded with a matching checksum):
+
+   ```bash
+   CRM_EXPORT_KEY=cr_live_... CF_ACCESS_CLIENT_ID=....access CF_ACCESS_CLIENT_SECRET=... \
+     node scripts/export-from-live.mjs --url https://clientrecordcrm.com --out ./migration-export
+   ```
+
+   This writes `tables/<name>.json` (the import source of truth), `csv/<name>.csv` (for people), `manifest.json`, `objects/<key>` and `export-info.json`. It exits non-zero if any object is missing or fails its SHA-256 checksum. Keep the directory private: it holds all CRM data, including every proposal's live share link token (anyone with a token can open and sign that proposal). Don't sync it to cloud storage, and delete it once the import is verified. Share tokens are kept on purpose so links already sent to clients keep working; if the folder may have been exposed, regenerate links for unsigned proposals after the move.
+4. **Prepare the target.** Create the D1 database `clientrecord-crm-db` and the R2 bucket `clientrecord-crm-files`, then apply every `drizzle/*.sql` migration to the database.
+5. **Import** (`--local` or `--remote` is required; `--dry-run` only writes the SQL and prints the plan):
+
+   ```bash
+   node scripts/import-to-cloudflare.mjs --in ./migration-export --database clientrecord-crm-db --bucket clientrecord-crm-files --remote --dry-run
+   node scripts/import-to-cloudflare.mjs --in ./migration-export --database clientrecord-crm-db --bucket clientrecord-crm-files --remote
+   ```
+
+   The script checks that every exported table exists in the target, refuses tables that already have rows unless `--force`, writes chunked SQL files to `migration-export/import-sql/` (each starting with `PRAGMA defer_foreign_keys = on;`, parents before children using the target's foreign keys, only columns the target has), runs them with `wrangler d1 execute`, uploads objects with `wrangler r2 object put` under the same keys, and then verifies row and object counts (non-zero exit on mismatch). `--config` and `--persist-to` are passed through to wrangler for local rehearsals, for example `--local --config dist/server/wrangler.json --persist-to .wrangler/import-check --database DB --bucket BUCKET`.
 
 ## External services
 

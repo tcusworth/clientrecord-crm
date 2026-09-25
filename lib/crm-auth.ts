@@ -24,8 +24,12 @@ export const API_KEY_SCOPE_PERMISSIONS: Record<string, CRMPermission[]> = {
   "inbox.capture": ["records.view","records.edit"],
   "meetings.import": ["records.view","records.edit"],
   "jobs.run": ["jobs.run"],
+  // Full data export (/api/backup-export). Checked by scope, so it grants no other permission.
+  "backups.export": [],
 };
 export const API_KEY_SCOPES = [...Object.keys(API_KEY_SCOPE_PERMISSIONS), "*"];
+// Scopes only an owner may put on a new key.
+export const OWNER_ONLY_API_KEY_SCOPES = ["*", "backups.export"];
 export function apiKeyPermissions(scopes: string[]): CRMPermission[] {
   const keys = scopes.includes("*") ? Object.keys(API_KEY_SCOPE_PERMISSIONS) : scopes;
   return Array.from(new Set(keys.flatMap(scope => API_KEY_SCOPE_PERMISSIONS[scope] || [])));
@@ -77,14 +81,15 @@ export async function sha256(value: string) {
   return Array.from(new Uint8Array(digest)).map(byte => byte.toString(16).padStart(2,"0")).join("");
 }
 
-export async function apiKeyUser(request: Request, requiredScope: string): Promise<CRMUser | null> {
+// allowWildcard:false requires the scope to be listed explicitly ("*" keys do not satisfy it).
+export async function apiKeyUser(request: Request, requiredScope: string, { allowWildcard = true } = {}): Promise<CRMUser | null> {
   const raw = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim();
   if (!raw?.startsWith("cr_live_")) return null;
   const hash = await sha256(raw);
   const row = await env.DB.prepare("SELECT id,scopes,created_by AS createdBy FROM api_keys WHERE key_hash=? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>datetime('now'))").bind(hash).first<{id:string;scopes:string;createdBy:string}>();
   if (!row) return null;
   const scopes = String(row.scopes).split(",").map(v=>v.trim());
-  if (!scopes.includes("*") && !scopes.includes(requiredScope)) return null;
+  if (!(allowWildcard && scopes.includes("*")) && !scopes.includes(requiredScope)) return null;
   await env.DB.prepare("UPDATE api_keys SET last_used_at=datetime('now') WHERE id=?").bind(row.id).run();
   const permissions = apiKeyPermissions(scopes);
   return { id:`api:${row.id}`, email:row.createdBy, role:permissions.includes("records.edit") ? "editor" : "viewer", permissions };
