@@ -65,3 +65,29 @@ export async function verifyResendWebhook(payload: string, headers: Headers) {
   const expected = btoa(String.fromCharCode(...new Uint8Array(signed)));
   return signature.split(" ").some(part => part === `v1,${expected}`);
 }
+
+// Signed manual-unsubscribe links. HMAC-SHA256 keyed off CRM_TOKEN_ENCRYPTION_KEY with a purpose prefix so the
+// tag can never collide with other uses of that key.
+const UNSUBSCRIBE_TOKEN_PURPOSE = "clientrecord:unsubscribe:v1:";
+function normalizeEmail(email: string) { return email.trim().toLowerCase(); }
+async function unsubscribeMac(email: string) {
+  if (!env.CRM_TOKEN_ENCRYPTION_KEY) throw new Error("CRM_TOKEN_ENCRYPTION_KEY is not configured.");
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(env.CRM_TOKEN_ENCRYPTION_KEY), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(UNSUBSCRIBE_TOKEN_PURPOSE + normalizeEmail(email))));
+}
+
+export async function unsubscribeToken(email: string) {
+  return btoa(String.fromCharCode(...await unsubscribeMac(email))).replaceAll("+","-").replaceAll("/","_").replaceAll("=","");
+}
+
+export async function unsubscribeUrl(email: string, origin: string) {
+  return `${origin.replace(/\/+$/,"")}/unsubscribe?email=${encodeURIComponent(normalizeEmail(email))}&token=${await unsubscribeToken(email)}`;
+}
+
+export async function verifyUnsubscribeToken(email: string, token: string) {
+  if (!env.CRM_TOKEN_ENCRYPTION_KEY || !email || !token) return false;
+  const expected = new TextEncoder().encode(await unsubscribeToken(email)), actual = new TextEncoder().encode(token);
+  let diff = expected.length ^ actual.length;
+  for (let i = 0; i < expected.length; i++) diff |= expected[i] ^ (actual[i] ?? 0);
+  return diff === 0;
+}

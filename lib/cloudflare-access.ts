@@ -12,7 +12,8 @@ type AccessClaims = {
   sub?: string;
 };
 
-type AccessKeySet = { expiresAt: number; keys: JsonWebKey[] };
+type AccessJsonWebKey = JsonWebKey & { kid?: string };
+type AccessKeySet = { expiresAt: number; keys: AccessJsonWebKey[] };
 const keySets = new Map<string, AccessKeySet>();
 
 function normalizeTeamDomain(value: unknown) {
@@ -42,7 +43,7 @@ async function accessKeys(teamDomain: string, refresh = false) {
   if (!refresh && cached && cached.expiresAt > Date.now()) return cached.keys;
   const response = await fetch(`${teamDomain}/cdn-cgi/access/certs`);
   if (!response.ok) throw new Error("Cloudflare Access signing keys are unavailable.");
-  const body = await response.json() as { keys?: JsonWebKey[] };
+  const body = await response.json() as { keys?: AccessJsonWebKey[] };
   if (!Array.isArray(body.keys) || !body.keys.length) throw new Error("Cloudflare Access returned no signing keys.");
   keySets.set(teamDomain, { keys: body.keys, expiresAt: Date.now() + 5 * 60 * 1000 });
   return body.keys;

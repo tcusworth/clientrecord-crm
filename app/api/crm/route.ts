@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { fromEmail, resend, resendConfigured, sendingIdentity } from "@/lib/resend";
-import { audit, can, crmUser } from "@/lib/crm-auth";
+import { audit, can, crmUser, displayName } from "@/lib/crm-auth";
 import { maybeRunDailyMaintenance } from "@/lib/operations";
 
 function clean(value: unknown, fallback = "") { return typeof value === "string" ? value.trim() : fallback; }
@@ -33,9 +33,10 @@ function audienceMatch(contact: Record<string, unknown>, audience: string, segme
   if (audience === "Prospects and opportunities") return contact.stage === "Prospect" || contact.stage === "Opportunity";
   return true;
 }
-async function contactRows() {
+type ContactRow = { id: number; firstName: string; lastName: string; email: string; company: string; resendId: string | null; tags: string[]; subscribed: boolean; [key: string]: unknown };
+async function contactRows(): Promise<ContactRow[]> {
   const result = await env.DB.prepare("SELECT id, first_name AS firstName, last_name AS lastName, email, company, title, phone, location, notes, lead_source AS leadSource, stage, tags, last_contact AS lastContact, next_follow_up AS nextFollowUp, subscribed, suppression_reason AS suppressionReason, suppressed_at AS suppressedAt, resend_id AS resendId, resend_synced_at AS resendSyncedAt, created_at AS createdAt, updated_at AS updatedAt FROM contacts ORDER BY last_name, first_name").all();
-  return result.results.map((c: Record<string, unknown>) => ({ ...c, tags: JSON.parse(String(c.tags || "[]")), subscribed: Boolean(c.subscribed) }));
+  return result.results.map((c: Record<string, unknown>) => ({ ...c, tags: JSON.parse(String(c.tags || "[]")), subscribed: Boolean(c.subscribed) }) as ContactRow);
 }
 async function campaignRow(id: number) {
   return await env.DB.prepare("SELECT id, name, subject, preview_text AS previewText, html, text_body AS textBody, status, audience, recipient_count AS recipientCount, resend_segment_id AS resendSegmentId, resend_broadcast_id AS resendBroadcastId, scheduled_at AS scheduledAt, sent_at AS sentAt, delivered_count AS deliveredCount, opened_count AS openedCount, clicked_count AS clickedCount, bounced_count AS bouncedCount, complained_count AS complainedCount, created_at AS createdAt, updated_at AS updatedAt FROM campaigns WHERE id=?").bind(id).first<Record<string, unknown>>();
@@ -56,8 +57,8 @@ async function readAll(account:{id:string;email:string;role:string}) {
   ]);
   const segmentRows=segments.results.map((s:Record<string,unknown>)=>({...s,recipientCount:contacts.filter(c=>audienceMatch(c,`segment:${s.id}`,s as unknown as SegmentRule)).length}));
   const duplicates:Array<{a:number;b:number;reason:string}>=[];for(let i=0;i<contacts.length;i++)for(let j=i+1;j<contacts.length;j++){const a=contacts[i],b=contacts[j];if(`${a.firstName} ${a.lastName}`.toLowerCase()===`${b.firstName} ${b.lastName}`.toLowerCase()&&(a.company===b.company||!a.company||!b.company))duplicates.push({a:Number(a.id),b:Number(b.id),reason:"Same name and company"});}
-  const identity=await sendingIdentity();
-  return { contacts, activities: activities.results, tasks: tasks.results.map((t: Record<string, unknown>) => ({ ...t, completed: Boolean(t.completed) })), campaigns: campaigns.results, segments:segmentRows, suppressions:suppressions.results, campaignEvents:campaignEvents.results, companies:companies.results,consentEvents:consentEvents.results,duplicates,customFields:customFields.results.map((field:Record<string,unknown>)=>({...field,options:JSON.parse(String(field.options||"[]"))})),customFieldValues:customValues.results,account, integration: { connected: Boolean(resendConfigured()&&identity.fromEmail), fromEmail: identity.fromEmail?fromEmail(identity):null, webhookReady: Boolean(env.RESEND_WEBHOOK_SECRET) } };
+  const [identity,name,brand]=await Promise.all([sendingIdentity(),displayName(account),env.DB.prepare("SELECT business_name AS businessName,from_name AS fromName,physical_address AS physicalAddress,sending_domain AS sendingDomain,logo_url AS logoUrl FROM brand_settings WHERE id=1").first<Record<string,string>>()]);
+  return { contacts, activities: activities.results, tasks: tasks.results.map((t: Record<string, unknown>) => ({ ...t, completed: Boolean(t.completed) })), campaigns: campaigns.results, segments:segmentRows, suppressions:suppressions.results, campaignEvents:campaignEvents.results, companies:companies.results,consentEvents:consentEvents.results,duplicates,customFields:customFields.results.map((field:Record<string,unknown>)=>({...field,options:JSON.parse(String(field.options||"[]"))})),customFieldValues:customValues.results,account:{...account,name},brand:{businessName:brand?.businessName||"",fromName:brand?.fromName||"",physicalAddress:brand?.physicalAddress||"",sendingDomain:brand?.sendingDomain||"",logoUrl:brand?.logoUrl||""}, integration: { connected: Boolean(resendConfigured()&&identity.fromEmail), fromEmail: identity.fromEmail?fromEmail(identity):null, webhookReady: Boolean(env.RESEND_WEBHOOK_SECRET) } };
 }
 async function syncCampaign(id: number) {
   const campaign = await campaignRow(id); if (!campaign) throw new Error("Campaign not found.");
@@ -127,9 +128,9 @@ export async function POST(request: Request) {
     if (body.action === "createActivity") {
       const contactId=Number(body.contactId), note=clean(body.note), type=clean(body.type,"Note"), today=new Date().toISOString(); if (!contactId || !note) return Response.json({error:"Contact and note are required."},{status:400});
       const statements=[env.DB.prepare("INSERT INTO activities (contact_id,type,note,happened_at) VALUES (?,?,?,?)").bind(contactId,type,note,today), env.DB.prepare("UPDATE contacts SET last_contact=? WHERE id=?").bind(today.slice(0,10),contactId)];
-      const next=clean(body.nextFollowUp); if(next){statements.push(env.DB.prepare("INSERT INTO tasks (contact_id,title,due_date,owner,status,completed) VALUES (?,?,?,?,'Open',0)").bind(contactId,"Follow up after "+type.toLowerCase(),next,clean(body.owner,"Trevor")),env.DB.prepare("UPDATE contacts SET next_follow_up=? WHERE id=?").bind(next,contactId));} await env.DB.batch(statements); return Response.json({status:"created"},{status:201});
+      const next=clean(body.nextFollowUp); if(next){statements.push(env.DB.prepare("INSERT INTO tasks (contact_id,title,due_date,owner,status,completed) VALUES (?,?,?,?,'Open',0)").bind(contactId,"Follow up after "+type.toLowerCase(),next,clean(body.owner,await displayName(account))),env.DB.prepare("UPDATE contacts SET next_follow_up=? WHERE id=?").bind(next,contactId));} await env.DB.batch(statements); return Response.json({status:"created"},{status:201});
     }
-    if(body.action==="createTask"){const contactId=Number(body.contactId),title=clean(body.title),dueDate=clean(body.dueDate),owner=clean(body.owner,"Trevor");if(!contactId||!title||!dueDate)return Response.json({error:"Contact, task and due date are required."},{status:400});await env.DB.batch([env.DB.prepare("INSERT INTO tasks (contact_id,title,due_date,owner,status,completed) VALUES (?,?,?,?,'Open',0)").bind(contactId,title,dueDate,owner),env.DB.prepare("UPDATE contacts SET next_follow_up=? WHERE id=?").bind(dueDate,contactId)]);return Response.json({status:"created"},{status:201});}
+    if(body.action==="createTask"){const contactId=Number(body.contactId),title=clean(body.title),dueDate=clean(body.dueDate),owner=clean(body.owner,await displayName(account));if(!contactId||!title||!dueDate)return Response.json({error:"Contact, task and due date are required."},{status:400});await env.DB.batch([env.DB.prepare("INSERT INTO tasks (contact_id,title,due_date,owner,status,completed) VALUES (?,?,?,?,'Open',0)").bind(contactId,title,dueDate,owner),env.DB.prepare("UPDATE contacts SET next_follow_up=? WHERE id=?").bind(dueDate,contactId)]);return Response.json({status:"created"},{status:201});}
     if(body.action==="bulkUpdateContacts"){
       const ids=Array.isArray(body.ids)?[...new Set(body.ids.map(Number).filter(id=>Number.isInteger(id)&&id>0))]:[],stage=clean(body.stage),addTag=clean(body.addTag);
       if(!ids.length||ids.length>500)return Response.json({error:"Select between one and 500 contacts."},{status:400});
@@ -180,6 +181,7 @@ export async function POST(request: Request) {
       const result=await env.DB.prepare("INSERT INTO campaigns (name,subject,preview_text,html,text_body,status,audience,recipient_count,created_at,updated_at) VALUES (?,?,?,?,?,'Draft',?,0,date('now'),datetime('now'))").bind(name,subject,previewText,html,textBody,audience).run(); return Response.json({id:result.meta.last_row_id},{status:201});
     }
     if (body.action === "syncCampaignAudience") return Response.json(await syncCampaign(Number(body.id)));
+    if ((body.action === "sendCampaignTest" || body.action === "scheduleCampaign") && !can(account,"campaigns.send")) return Response.json({error:"Campaign send permission is required."},{status:403});
     if (body.action === "sendCampaignTest") {
       const campaign=await campaignRow(Number(body.id)), to=clean(body.to).toLowerCase(); if(!campaign||!to.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/))return Response.json({error:"Choose a campaign and enter a valid test address."},{status:400});
       const identity=await sendingIdentity();
