@@ -47,7 +47,6 @@ export async function listContacts(db:D1Database,query:ContactQuery){
   return {rows:(rows.results as Row[]).map(contactRow),total:Number((total.results as Row[])[0]?.total||0),offset:query.offset,limit:query.limit,sort:query.sort};
 }
 /** Contact ids matching a list filter (for "apply to all matching" bulk actions), capped. */
-export async function contactIdsMatching(db:D1Database,filter:ContactFilter,cap:number){const where=contactWhere(filter);return ((await db.prepare(`SELECT c.id FROM contacts c ${where.sql} ORDER BY c.id LIMIT ?`).bind(...where.binds,cap).all()).results as Row[]).map(row=>Number(row.id))}
 /** Dashboard / campaign counts computed in SQL (one scan) instead of filtering every contact in the browser. */
 export async function contactSummary(db:D1Database){
   const row=await db.prepare("SELECT count(*) AS total,COALESCE(sum(stage='Customer'),0) AS customers,COALESCE(sum(subscribed=1),0) AS subscribed,COALESCE(sum(subscribed=1 AND stage='Customer'),0) AS subscribedCustomers,COALESCE(sum(subscribed=1 AND stage IN ('Prospect','Opportunity')),0) AS subscribedProspects,COALESCE(sum(last_contact IS NOT NULL AND last_contact<>'' AND last_contact<?),0) AS quiet,COALESCE(sum(next_follow_up IS NOT NULL AND next_follow_up<>''),0) AS needsFollowUp FROM contacts").bind(quietCutoff()).first<Row>();
