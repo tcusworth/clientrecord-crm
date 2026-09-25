@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { audit, can, crmUser } from "@/lib/crm-auth";
 import { fromEmail, resend, sendingIdentity } from "@/lib/resend";
+import { withoutShareToken } from "@/lib/proposals";
 
 type Row=Record<string,unknown>;
 const clean=(value:unknown,max=12000)=>String(value??"").trim().slice(0,max);
@@ -25,7 +26,7 @@ export async function GET(request:Request){
  try{const [proposals,brand]=await Promise.all([
   rows("SELECT p.*,d.name AS dealName,d.company,d.contact_id AS contactId,c.first_name||' '||c.last_name AS contactName,c.email AS contactEmail,a.signer_name AS signerName,a.signer_email AS signerEmail,a.signer_title AS signerTitle,a.accepted_at AS signatureAcceptedAt,(SELECT count(*) FROM proposal_share_events e WHERE e.proposal_id=p.id AND e.type='Opened') AS openCount FROM deal_proposals p JOIN deals d ON d.id=p.deal_id LEFT JOIN contacts c ON c.id=d.contact_id LEFT JOIN proposal_acceptances a ON a.proposal_id=p.id ORDER BY p.updated_at DESC LIMIT 200"),
   env.DB.prepare("SELECT business_name AS businessName,logo_url AS logoUrl,physical_address AS physicalAddress,from_name AS fromName,from_email AS fromEmail FROM brand_settings WHERE id=1").first<Row>(),
- ]);const origin=new URL(request.url).origin;return Response.json({account:{email:user.email},proposals:proposals.map(item=>({...item,shareUrl:item.share_token?`${origin}/proposal/${item.share_token}`:null})),brand:brand||{businessName:"ClientRecord",logoUrl:"",physicalAddress:"",fromName:"",fromEmail:""}});
+ ]);const origin=new URL(request.url).origin;const canShare=can(user,"records.edit");return Response.json({account:{email:user.email},proposals:proposals.map(item=>({...withoutShareToken(item),shareUrl:canShare&&item.share_token?`${origin}/proposal/${item.share_token}`:null})),brand:brand||{businessName:"ClientRecord",logoUrl:"",physicalAddress:"",fromName:"",fromEmail:""}});
  }catch(error){console.error(error);return Response.json({error:"Commercial proposals could not load."},{status:503});}
 }
 

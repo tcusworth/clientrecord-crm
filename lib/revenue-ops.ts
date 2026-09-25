@@ -13,6 +13,7 @@ export type LeadInput={source?:unknown;formName?:unknown;firstName?:unknown;last
 
 export async function captureLead(input:LeadInput,user:CRMUser){
   const address=email(input.email);if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address))throw new Error("A valid email address is required.");
+  const attributionJson=JSON.stringify(typeof input.attribution==="object"&&input.attribution?input.attribution:{}),payloadJson=JSON.stringify(typeof input.payload==="object"&&input.payload?input.payload:{});if(attributionJson.length>20000||payloadJson.length>20000)throw new Error("Lead attribution and payload are limited to 20,000 characters each.");
   const name=parts(input.name),firstName=clean(input.firstName||name.firstName,120),lastName=clean(input.lastName||name.lastName,120),companyName=clean(input.company,240),website=clean(input.website,500),source=clean(input.source||"Website",120)||"Website",now=new Date().toISOString();
   const existing=await env.DB.prepare("SELECT * FROM contacts WHERE lower(email)=lower(?)").bind(address).first<Row>();
   let companyId:number|null=null,owner=user.email;
@@ -20,8 +21,8 @@ export async function captureLead(input:LeadInput,user:CRMUser){
   let contactId:number|null=existing?Number(existing.id):null,duplicateContactId:number|null=existing?Number(existing.id):null,status=existing?"Duplicate":"New";
   if(!existing){const created=await env.DB.prepare("INSERT INTO contacts(first_name,last_name,email,company,title,phone,location,notes,lead_source,stage,tags,subscribed,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,'Lead','[]',1,?,?)").bind(firstName,lastName,address,companyName,"","","",clean(input.message,4000),source,now,now).run();contactId=Number(created.meta.last_row_id);duplicateContactId=null;}
   const task=await env.DB.prepare("INSERT INTO tasks(contact_id,title,due_date,owner,status,completed) VALUES (?,? ,date('now'),?,'Open',0)").bind(contactId,`Respond to ${firstName||address} · ${source}`,owner).run();
-  const intakeId=crypto.randomUUID(),attribution=typeof input.attribution==="object"&&input.attribution?input.attribution:{},payload=typeof input.payload==="object"&&input.payload?input.payload:{};
-  await env.DB.prepare("INSERT INTO lead_intakes(id,source,form_name,first_name,last_name,email,company_name,website,message,attribution_json,payload_json,status,owner,contact_id,company_id,duplicate_contact_id,task_id,received_at,routed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").bind(intakeId,source,clean(input.formName,120),firstName,lastName,address,companyName,website,clean(input.message,8000),JSON.stringify(attribution),JSON.stringify(payload),status,owner,contactId,companyId,duplicateContactId,Number(task.meta.last_row_id),now,now).run();
+  const intakeId=crypto.randomUUID();
+  await env.DB.prepare("INSERT INTO lead_intakes(id,source,form_name,first_name,last_name,email,company_name,website,message,attribution_json,payload_json,status,owner,contact_id,company_id,duplicate_contact_id,task_id,received_at,routed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").bind(intakeId,source,clean(input.formName,120),firstName,lastName,address,companyName,website,clean(input.message,8000),attributionJson,payloadJson,status,owner,contactId,companyId,duplicateContactId,Number(task.meta.last_row_id),now,now).run();
   await audit(user,"lead.capture","lead_intake",intakeId,existing?"Captured a duplicate lead for review":"Captured and routed a lead",{source,email:address,contactId,companyId,duplicateContactId,owner});
   return {id:intakeId,status,contactId,companyId,owner,duplicate:Boolean(existing)};
 }

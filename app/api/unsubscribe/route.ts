@@ -1,9 +1,13 @@
 import { env } from "cloudflare:workers";
+import { rateLimit } from "@/lib/rate-limit";
+import { verifyUnsubscribeToken } from "@/lib/resend";
 
 function email(value:unknown){return typeof value==="string"?value.trim().toLowerCase():"";}
 
 export async function POST(request:Request){
+ const limited=await rateLimit(request,"unsubscribe",10);if(limited)return limited;
  const body=await request.json().catch(()=>({})) as Record<string,unknown>,address=email(body.email);if(!address.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/))return Response.json({error:"Enter a valid email address."},{status:400});
+ if(!await verifyUnsubscribeToken(address,typeof body.token==="string"?body.token.trim():""))return Response.json({error:"This unsubscribe link is invalid. Use the unsubscribe link in the email you received."},{status:403});
  await env.DB.batch([
   env.DB.prepare("INSERT INTO suppressions (email,reason,source,created_at,removed_at) VALUES (?,'Recipient unsubscribe','Public page',datetime('now'),NULL) ON CONFLICT(email) DO UPDATE SET reason='Recipient unsubscribe',source='Public page',created_at=datetime('now'),removed_at=NULL").bind(address),
   env.DB.prepare("UPDATE contacts SET subscribed=0,suppression_reason='Recipient unsubscribe',suppressed_at=datetime('now'),resend_synced_at=NULL,updated_at=datetime('now') WHERE email=?").bind(address),

@@ -142,7 +142,7 @@ export const customObjectTypes = sqliteTable("custom_object_types", {
 export const customObjectFields = sqliteTable("custom_object_fields", {
   id: text("id").primaryKey(), objectTypeId: text("object_type_id").notNull().references(() => customObjectTypes.id), key: text("key").notNull(), label: text("label").notNull(),
   fieldType: text("field_type").notNull().default("text"), optionsJson: text("options_json").notNull().default("[]"), required: integer("required", { mode:"boolean" }).notNull().default(false),
-  sortOrder: integer("sort_order").notNull().default(0), showInList: integer("show_in_list", { mode:"boolean" }).notNull().default(true), createdAt: text("created_at").notNull(), updatedAt: text("updated_at").notNull(),
+  sortOrder: integer("sort_order").notNull().default(0), showInList: integer("show_in_list", { mode:"boolean" }).notNull().default(true), archivedAt: text("archived_at"), createdAt: text("created_at").notNull(), updatedAt: text("updated_at").notNull(),
 }, table => [uniqueIndex("custom_object_fields_object_key_unique").on(table.objectTypeId, table.key), index("custom_object_fields_object_sort_idx").on(table.objectTypeId, table.sortOrder)]);
 export const customObjectRecords = sqliteTable("custom_object_records", {
   id: text("id").primaryKey(), objectTypeId: text("object_type_id").notNull().references(() => customObjectTypes.id), displayName: text("display_name").notNull(), valuesJson: text("values_json").notNull().default("{}"),
@@ -321,3 +321,7 @@ export const communicationReviewItems = sqliteTable("communication_review_items"
 export const actionUndoLog = sqliteTable("action_undo_log", {
   id:text("id").primaryKey(), action:text("action").notNull(), entityType:text("entity_type").notNull(), entityId:text("entity_id").notNull(), beforeJson:text("before_json").notNull().default("{}"), afterJson:text("after_json").notNull().default("{}"), actor:text("actor").notNull(), expiresAt:text("expires_at").notNull(), undoneAt:text("undone_at"), createdAt:text("created_at").notNull(),
 }, t=>[index("action_undo_actor_date").on(t.actor,t.createdAt),index("action_undo_expiry").on(t.expiresAt,t.undoneAt)]);
+
+export const rateLimits = sqliteTable("rate_limits", {
+  key:text("key").primaryKey(), windowStart:integer("window_start").notNull(), count:integer("count").notNull().default(0),
+}, t=>[index("rate_limits_window").on(t.windowStart)]);

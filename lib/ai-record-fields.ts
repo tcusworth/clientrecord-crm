@@ -491,7 +491,7 @@ export function buildDeterministicAIRecordResult(input: {
         : supported >= Math.ceil(total / 2)
           ? "Medium"
           : "Low",
-    explanation: `Source-backed ${entityType} fields generated from current ClientRecord records. No external enrichment was used.`,
+    explanation: `Rules-based ${entityType} fields generated from current ClientRecord records. No external enrichment was used.`,
     dataGaps,
   };
 }

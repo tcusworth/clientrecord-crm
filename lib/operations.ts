@@ -1,10 +1,12 @@
 import { env } from "cloudflare:workers";
 import { fromEmail, resend, resendConfigured, sendingIdentity } from "@/lib/resend";
 import { runCustomerSuccessAlerts } from "@/lib/customer-success";
+import { DEFAULT_OWNER_EMAIL } from "@/lib/crm-auth";
+import { escapeHtml } from "@/lib/email-templates";
 
 type Row = Record<string, unknown>;
 const json = (value: unknown) => JSON.stringify(value, (key, item) => /token|secret/i.test(key) ? "[redacted]" : item).slice(0, 32000);
-const ownerEmail = () => String(env.CRM_ALLOWED_EMAILS || "tcusworth@gmail.com").split(",")[0].trim().toLowerCase();
+const ownerEmail = () => String(env.CRM_ALLOWED_EMAILS || DEFAULT_OWNER_EMAIL).split(",")[0].trim().toLowerCase();
 
 export async function systemEvent(severity: "info"|"warning"|"error", category: string, source: string, message: string, details: unknown = {}) {
   try { await env.DB.prepare("INSERT INTO system_events(severity,category,source,message,details,created_at) VALUES (?,?,?,?,?,datetime('now'))").bind(severity,category,source,message,json(details)).run(); }
@@ -41,7 +43,8 @@ export async function runDueAutomations(actor = "system") {
           if (blocked) { await env.DB.prepare("UPDATE automation_enrollments SET status='Suppressed',stopped_reason='Contact is unsubscribed or suppressed',completed_at=datetime('now') WHERE id=?").bind(row.id).run(); continue; }
           if (!resendConfigured()) throw new Error("Resend is not configured");
           const identity = await sendingIdentity();
-          const body = String(step.body||"").replaceAll("{{first_name}}",String(row.firstName||"there"));
+          // Step bodies are authored as plain text: escape the body and merge values before converting newlines to <br>.
+          const body = escapeHtml(String(step.body||"")).replaceAll("{{first_name}}",escapeHtml(String(row.firstName||"there")));
           const sent = await resend("/emails",{method:"POST",body:JSON.stringify({from:fromEmail(identity),to:[row.email],reply_to:identity.replyToEmail||undefined,subject:step.subject,html:`<div style=\"font:16px Arial;line-height:1.6\">${body.replaceAll("\n","<br>")}</div>`})}) as Row;
           await Promise.all([
             env.DB.prepare("INSERT INTO activities(contact_id,type,note,happened_at) VALUES (?,'Automated email',?,datetime('now'))").bind(row.contactId,`Sequence email: ${step.subject}`).run(),
@@ -81,16 +84,17 @@ export async function runInboxSlaAlerts() {
   for(const message of overdue){await env.DB.prepare("UPDATE inbox_messages SET status='Overdue',updated_at=datetime('now') WHERE id=?").bind(message.id).run();const key=`inbox:${message.id}:${new Date().toISOString().slice(0,10)}`,exists=await env.DB.prepare("SELECT id FROM notifications WHERE kind='inbox_sla' AND entity_id=? AND created_at>=datetime('now','-1 day')").bind(key).first();if(exists)continue;await notify(String(message.owner||ownerEmail()),"inbox_sla",`Response overdue: ${String(message.subject||"customer email")}`,"An inbound customer email has passed its response target.","inbox",key,"/?view=inbox");created++;}return created;
 }
 
-const exportTables=["contacts","companies","sales_pipelines","deals","customer_success_plans","account_stakeholders","account_signals","qualification_alerts","activities","tasks","lead_intakes","inbox_messages","deal_stage_history","deal_tasks","deal_activities","deal_relationship_health_scores","deal_recommendations","deal_notes","deal_stakeholders","deal_line_items","deal_insights","deal_reviews","client_documents","document_versions","deal_meetings","deal_meeting_attendees","meetily_webhook_events","deal_proposals","proposal_acceptances","proposal_share_events","quickbooks_invoices","campaigns","campaign_events","segments","suppressions","consent_events","lead_sources","automation_sequences","automation_steps","automation_enrollments","custom_field_definitions","custom_field_values","team_members","audit_logs","sync_records","brand_settings","operation_settings","ai_settings","ai_prompt_versions","ai_runs","ai_artifacts","ai_artifact_sources","ai_feedback_events","ai_record_fields"] as const;
-const restoreInsertOrder=["contacts","companies","sales_pipelines","deals","customer_success_plans","account_stakeholders","account_signals","qualification_alerts","activities","tasks","lead_intakes","inbox_messages","deal_stage_history","deal_tasks","deal_activities","deal_relationship_health_scores","deal_recommendations","deal_notes","deal_stakeholders","deal_line_items","deal_insights","deal_reviews","client_documents","document_versions","deal_meetings","deal_meeting_attendees","meetily_webhook_events","deal_proposals","proposal_acceptances","proposal_share_events","quickbooks_invoices","campaigns","campaign_events","segments","suppressions","consent_events","lead_sources","automation_sequences","automation_steps","automation_enrollments","custom_field_definitions","custom_field_values","team_members","audit_logs","sync_records","brand_settings","operation_settings","ai_settings","ai_prompt_versions","ai_runs","ai_artifacts","ai_artifact_sources","ai_feedback_events","ai_record_fields"];
-const restoreDeleteOrder=[...restoreInsertOrder].reverse();
+// Single source of truth for backups/exports, ordered so every table follows the tables its foreign keys reference (insert order; delete in reverse).
+// Excluded on purpose: credentials and secrets (api_keys, integration_accounts, webhook_endpoints and their webhook_deliveries), transient state (oauth_states, rate_limits, action_undo_log),
+// and operational logs/catalog (backup_snapshots, job_runs, system_events, delivery_logs). customer_portal_access is kept (token hashes only) because it references contacts/companies and would otherwise block their restore.
+export const backupTables=["contacts","companies","sales_pipelines","deals","customer_success_plans","account_stakeholders","account_signals","qualification_alerts","activities","tasks","lead_intakes","inbox_messages","deal_stage_history","deal_tasks","deal_activities","deal_relationship_health_scores","deal_recommendations","deal_notes","deal_stakeholders","deal_line_items","deal_insights","deal_reviews","client_documents","document_versions","deal_meetings","deal_meeting_attendees","meetily_webhook_events","ai_runs","ai_artifacts","deal_proposals","proposal_acceptances","proposal_share_events","quickbooks_invoices","campaigns","campaign_events","segments","suppressions","consent_events","lead_sources","automation_sequences","automation_steps","automation_enrollments","custom_field_definitions","custom_field_values","team_members","audit_logs","sync_records","brand_settings","operation_settings","ai_settings","ai_prompt_versions","ai_artifact_sources","ai_feedback_events","ai_record_fields","service_cases","case_notes","communication_review_items","competitors","custom_object_types","custom_object_fields","custom_object_layouts","custom_object_records","custom_relationship_types","custom_relationships","custom_rollup_definitions","customer_portal_access","deal_competitors","field_captures","import_batches","import_changes","knowledge_articles","notifications","partner_companies","partner_contacts","partner_referrals","partner_payouts"] as const;
 
 async function checksum(value:string){const digest=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(value));return Array.from(new Uint8Array(digest)).map(b=>b.toString(16).padStart(2,"0")).join("");}
 
 export async function createBackup(createdBy:string, reason="scheduled") {
   if(!env.BUCKET) throw new Error("Backup object storage is not configured.");
   const id=crypto.randomUUID(), data:Record<string,unknown>={version:1,createdAt:new Date().toISOString(),reason,tables:{}}; let rowCount=0;
-  for(const table of exportTables){const rows=(await env.DB.prepare(`SELECT * FROM ${table}`).all()).results;(data.tables as Record<string,unknown>)[table]=rows;rowCount+=rows.length;}
+  for(const table of backupTables){const rows=(await env.DB.prepare(`SELECT * FROM ${table}`).all()).results;(data.tables as Record<string,unknown>)[table]=rows;rowCount+=rows.length;}
   const payload=JSON.stringify(data), hash=await checksum(payload), objectKey=`crm-backups/${new Date().toISOString().slice(0,10)}/${id}.json`;
   await env.BUCKET.put(objectKey,payload,{httpMetadata:{contentType:"application/json"},customMetadata:{checksum:hash,rowCount:String(rowCount),reason}});
   await env.DB.prepare("INSERT INTO backup_snapshots(id,object_key,status,row_count,checksum,created_by,created_at) VALUES (?,?, 'Completed',?,?,?,datetime('now'))").bind(id,objectKey,rowCount,hash,createdBy).run();
@@ -102,8 +106,9 @@ export async function restoreBackup(id:string, actor:string) {
   const snapshot=await env.DB.prepare("SELECT object_key AS objectKey FROM backup_snapshots WHERE id=? AND status='Completed'").bind(id).first<{objectKey:string}>(); if(!snapshot)throw new Error("Backup snapshot was not found.");
   await createBackup(actor,"pre-restore"); const object=await env.BUCKET.get(snapshot.objectKey); if(!object)throw new Error("Backup object is unavailable.");
   const data=await object.json() as {tables:Record<string,Row[]>};
-  for(const table of restoreDeleteOrder) await env.DB.prepare(`DELETE FROM ${table}`).run();
-  for(const table of restoreInsertOrder){if(table==="audit_logs")await env.DB.prepare("DELETE FROM audit_logs").run();const rows=data.tables[table]||[];if(!rows.length)continue;const columns=Object.keys(rows[0]);for(let i=0;i<rows.length;i+=50){const statements=rows.slice(i,i+50).map(row=>env.DB.prepare(`INSERT INTO ${table} (${columns.map(c=>`\`${c}\``).join(",")}) VALUES (${columns.map(()=>"?").join(",")})`).bind(...columns.map(c=>row[c] as string|number|null)));await env.DB.batch(statements);}}
+  const present=backupTables.filter(table=>Array.isArray(data.tables[table])); // tables added after this snapshot was taken are left untouched
+  for(const table of [...present].reverse()) await env.DB.prepare(`DELETE FROM ${table}`).run();
+  for(const table of present){const rows=data.tables[table]||[];if(!rows.length)continue;const columns=Object.keys(rows[0]);for(let i=0;i<rows.length;i+=50){const statements=rows.slice(i,i+50).map(row=>env.DB.prepare(`INSERT INTO ${table} (${columns.map(c=>`\`${c}\``).join(",")}) VALUES (${columns.map(()=>"?").join(",")})`).bind(...columns.map(c=>row[c] as string|number|null)));await env.DB.batch(statements);}}
   await env.DB.prepare("UPDATE backup_snapshots SET restored_at=datetime('now') WHERE id=?").bind(id).run();
   return {restored:true};
 }

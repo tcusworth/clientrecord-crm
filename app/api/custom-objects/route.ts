@@ -52,8 +52,8 @@ async function readAll(user: CRMUser) {
   const allowSensitive = can(user, "documents.manage_sensitive");
   const [objectTypes, fields, records, layouts, relationshipTypes, relationships, rollups, companies, contacts, deals, documents] = await Promise.all([
     rows("SELECT id,key,singular_name AS singularName,plural_name AS pluralName,description,icon,title_field_key AS titleFieldKey,status,created_by AS createdBy,created_at AS createdAt,updated_at AS updatedAt FROM custom_object_types WHERE status='Active' ORDER BY plural_name"),
-    rows("SELECT id,object_type_id AS objectTypeId,key,label,field_type AS fieldType,options_json AS optionsJson,required,sort_order AS sortOrder,show_in_list AS showInList FROM custom_object_fields ORDER BY object_type_id,sort_order,label"),
-    rows("SELECT id,object_type_id AS objectTypeId,display_name AS displayName,values_json AS valuesJson,owner,status,created_by AS createdBy,created_at AS createdAt,updated_at AS updatedAt FROM custom_object_records WHERE status='Active' ORDER BY updated_at DESC LIMIT 1500"),
+    rows("SELECT id,object_type_id AS objectTypeId,key,label,field_type AS fieldType,options_json AS optionsJson,required,sort_order AS sortOrder,show_in_list AS showInList FROM custom_object_fields WHERE archived_at IS NULL ORDER BY object_type_id,sort_order,label"),
+    rows("SELECT id,object_type_id AS objectTypeId,display_name AS displayName,values_json AS valuesJson,owner,status,created_by AS createdBy,created_at AS createdAt,updated_at AS updatedAt FROM custom_object_records WHERE status='Active' AND object_type_id IN (SELECT id FROM custom_object_types WHERE status='Active') ORDER BY updated_at DESC LIMIT 1500"),
     rows("SELECT id,object_type_id AS objectTypeId,name,sections_json AS sectionsJson,is_default AS isDefault FROM custom_object_layouts ORDER BY object_type_id,is_default DESC,name"),
     rows("SELECT id,name,from_type AS fromType,to_type AS toType,from_label AS fromLabel,to_label AS toLabel,cardinality FROM custom_relationship_types ORDER BY name"),
     rows("SELECT id,relationship_type_id AS relationshipTypeId,from_entity_type AS fromEntityType,from_entity_id AS fromEntityId,to_entity_type AS toEntityType,to_entity_id AS toEntityId,note,created_by AS createdBy,created_at AS createdAt FROM custom_relationships ORDER BY created_at DESC LIMIT 3000"),
@@ -95,7 +95,7 @@ export async function POST(request: Request) {
   const user = await crmUser(request), error = denied(user, "records.edit"); if (error || !user) return error;
   try {
     const body = await request.json() as Row, action = text(body.action, 50), now = new Date().toISOString();
-    if (["saveObjectType", "saveField", "saveLayout", "saveRelationshipType", "saveRollup"].includes(action) && !canAdmin(user.role)) return Response.json({ error:"Administrator access is required." }, { status:403 });
+    if (["saveObjectType", "saveField", "saveLayout", "saveRelationshipType", "saveRollup", "archiveObjectType", "archiveField"].includes(action) && !canAdmin(user.role)) return Response.json({ error:"Administrator access is required." }, { status:403 });
     if (action === "saveObjectType") {
       const id = text(body.id, 80) || crypto.randomUUID(), singularName = text(body.singularName, 80), pluralName = text(body.pluralName, 80), key = slug(body.key || pluralName);
       if (!singularName || !pluralName || !key) throw new Error("Enter singular and plural names.");
@@ -116,7 +116,7 @@ export async function POST(request: Request) {
       await audit(user,"custom_object_field.create","custom_object_field",id,`Added ${label} field`,{objectTypeId,key,fieldType});
     } else if (action === "saveLayout") {
       const objectTypeId=text(body.objectTypeId,80); if(!await one("SELECT id FROM custom_object_types WHERE id=?",objectTypeId))throw new Error("Object type not found.");
-      const validKeys=new Set((await rows("SELECT key FROM custom_object_fields WHERE object_type_id=?",objectTypeId)).map(item=>String(item.key))), requested=Array.isArray(body.sections)?body.sections:[];
+      const validKeys=new Set((await rows("SELECT key FROM custom_object_fields WHERE object_type_id=? AND archived_at IS NULL",objectTypeId)).map(item=>String(item.key))), requested=Array.isArray(body.sections)?body.sections:[];
       const sections=requested.slice(0,12).map(item=>{const section=item as Row;return {title:text(section.title,80)||"Details",fieldKeys:(Array.isArray(section.fieldKeys)?section.fieldKeys:[]).map(value=>text(value,80)).filter(value=>validKeys.has(value))};}).filter(section=>section.fieldKeys.length);
       if(!sections.length)throw new Error("Add at least one layout section with fields.");
       const existing=await one("SELECT id FROM custom_object_layouts WHERE object_type_id=? AND is_default=1",objectTypeId), id=String(existing?.id||crypto.randomUUID());
@@ -135,11 +135,10 @@ export async function POST(request: Request) {
       await audit(user,"custom_rollup.create","custom_rollup",id,`Created ${label} rollup`,{objectTypeId,relationshipTypeId,aggregate,sourceFieldKey});
     } else if (action === "saveRecord") {
       const objectTypeId=text(body.objectTypeId,80),type=await one("SELECT singular_name AS singularName,title_field_key AS titleFieldKey FROM custom_object_types WHERE id=? AND status='Active'",objectTypeId);if(!type)throw new Error("Object type not found.");
-      const fields=await rows("SELECT key,label,field_type AS fieldType,options_json AS optionsJson,required FROM custom_object_fields WHERE object_type_id=? ORDER BY sort_order",objectTypeId),input=body.values&&typeof body.values==="object"?body.values as Row:{},values:Values={};
+      const fields=await rows("SELECT key,label,field_type AS fieldType,options_json AS optionsJson,required FROM custom_object_fields WHERE object_type_id=? AND archived_at IS NULL ORDER BY sort_order",objectTypeId),input=body.values&&typeof body.values==="object"?body.values as Row:{},id=text(body.id,80)||crypto.randomUUID(),existing=await one("SELECT id,values_json AS valuesJson FROM custom_object_records WHERE id=? AND object_type_id=?",id,objectTypeId),values:Values={...parseJson<Values>(existing?.valuesJson,{})}; // keeps values of archived fields
       for(const field of fields){const value=normalizedValue(field,input[String(field.key)]);if(field.required&&(value===""||value==null))throw new Error(`${field.label} is required.`);values[String(field.key)]=value;}
       const displayName=text(values[String(type.titleFieldKey)]||values.name||Object.values(values).find(Boolean),180);if(!displayName)throw new Error(`Enter a ${type.singularName} name.`);
-      const id=text(body.id,80)||crypto.randomUUID(),existing=await one("SELECT id FROM custom_object_records WHERE id=? AND object_type_id=?",id,objectTypeId);
-      if(existing)await env.DB.prepare("UPDATE custom_object_records SET display_name=?,values_json=?,owner=?,status='Active',updated_at=? WHERE id=?").bind(displayName,JSON.stringify(values),text(body.owner,120),now,id).run();else await env.DB.prepare("INSERT INTO custom_object_records(id,object_type_id,display_name,values_json,owner,status,created_by,created_at,updated_at) VALUES(?,?,?,?,?,'Active',?,?,?)").bind(id,objectTypeId,displayName,JSON.stringify(values),text(body.owner,120)||user.email,user.email,now,now).run();
+            if(existing)await env.DB.prepare("UPDATE custom_object_records SET display_name=?,values_json=?,owner=?,status='Active',updated_at=? WHERE id=?").bind(displayName,JSON.stringify(values),text(body.owner,120),now,id).run();else await env.DB.prepare("INSERT INTO custom_object_records(id,object_type_id,display_name,values_json,owner,status,created_by,created_at,updated_at) VALUES(?,?,?,?,?,'Active',?,?,?)").bind(id,objectTypeId,displayName,JSON.stringify(values),text(body.owner,120)||user.email,user.email,now,now).run();
       await audit(user,"custom_object_record.save","custom_object_record",id,`${existing?"Updated":"Created"} ${displayName}`,{objectTypeId});
     } else if (action === "linkRecords") {
       const relationshipTypeId=text(body.relationshipTypeId,80),relationship=await one("SELECT from_type AS fromType,to_type AS toType,cardinality,name FROM custom_relationship_types WHERE id=?",relationshipTypeId);if(!relationship)throw new Error("Relationship type not found.");
@@ -152,6 +151,12 @@ export async function POST(request: Request) {
       await audit(user,"custom_relationship.create","custom_relationship",id,`Linked records with ${relationship.name}`,{relationshipTypeId,fromEntityId,toEntityId});
     } else if (action === "unlinkRecords") {
       if(!can(user,"records.delete"))return Response.json({error:"Delete permission is required."},{status:403});const id=text(body.id,80),existing=await one("SELECT * FROM custom_relationships WHERE id=?",id);if(!existing)throw new Error("Relationship not found.");await env.DB.prepare("DELETE FROM custom_relationships WHERE id=?").bind(id).run();await audit(user,"custom_relationship.delete","custom_relationship",id,"Removed linked-record relationship",existing);
+    } else if (action === "archiveObjectType") {
+      const id=text(body.id,80),type=await one("SELECT singular_name AS singularName,plural_name AS pluralName FROM custom_object_types WHERE id=? AND status='Active'",id);if(!type)throw new Error("Object type not found.");
+      await env.DB.prepare("UPDATE custom_object_types SET status='Archived',updated_at=? WHERE id=?").bind(now,id).run();await audit(user,"custom_object_type.archive","custom_object_type",id,`Archived ${type.pluralName} object type`,{records:"Retained; hidden while the object type is archived."});
+    } else if (action === "archiveField") {
+      const id=text(body.id,80),field=await one("SELECT f.label,f.key,f.object_type_id AS objectTypeId,t.title_field_key AS titleFieldKey FROM custom_object_fields f JOIN custom_object_types t ON t.id=f.object_type_id WHERE f.id=? AND f.archived_at IS NULL",id);if(!field)throw new Error("Field not found.");if(field.key===field.titleFieldKey)throw new Error("The title field cannot be archived.");
+      await env.DB.prepare("UPDATE custom_object_fields SET archived_at=?,updated_at=? WHERE id=?").bind(now,now,id).run();await audit(user,"custom_object_field.archive","custom_object_field",id,`Archived ${field.label} field`,{objectTypeId:field.objectTypeId,key:field.key,values:"Retained on existing records."});
     } else if (action === "archiveRecord") {
       if(!can(user,"records.delete"))return Response.json({error:"Delete permission is required."},{status:403});const id=text(body.id,80),record=await one("SELECT display_name AS displayName FROM custom_object_records WHERE id=?",id);if(!record)throw new Error("Record not found.");await env.DB.prepare("UPDATE custom_object_records SET status='Archived',updated_at=? WHERE id=?").bind(now,id).run();await audit(user,"custom_object_record.archive","custom_object_record",id,`Archived ${record.displayName}`);
     } else throw new Error("Unknown custom-object action.");

@@ -6,8 +6,8 @@ type Row = Record<string, unknown>;
 export const aiFeatures = [
   { key:"relationship-health", name:"Relationship health", mode:"Deterministic", phase:2, description:"Explainable 0–100 account and deal health score." },
   { key:"stakeholder-coverage", name:"Stakeholder coverage", mode:"Deterministic", phase:3, description:"Coverage gaps across decision-maker, champion, buyer, and blocker roles." },
-  { key:"next-best-action", name:"Next-best action", mode:"Hybrid", phase:4, description:"One prioritized action with a source-backed reason." },
-  { key:"meeting-prep", name:"Meeting-preparation brief", mode:"Hybrid", phase:5, description:"Context, commitments, risks, stakeholder gaps, agenda, and questions." },
+  { key:"next-best-action", name:"Next-best action", mode:"Rules", phase:4, description:"One prioritized action with a source-backed reason." },
+  { key:"meeting-prep", name:"Meeting-preparation brief", mode:"Rules", phase:5, description:"Context, commitments, risks, stakeholder gaps, agenda, and questions." },
   { key:"follow-up-draft", name:"AI follow-up draft", mode:"Generative", phase:6, description:"Editable meeting summary, decisions, commitments, and email copy." },
   { key:"account-summary", name:"Account summary", mode:"Generative", phase:7, description:"Current account context from approved CRM records." },
   { key:"icp-tier", name:"ICP tier", mode:"Hybrid", phase:7, description:"Fit classification with evidence and confidence." },
@@ -31,7 +31,7 @@ export const defaultAiSettings = {
   maxContextChars:60000, resultRetentionDays:730, requireReview:true, allowSensitiveSources:false, updatedBy:"", updatedAt:"",
 };
 
-export function providerConfigured(){ return Boolean(String((env as unknown as Record<string,unknown>).OPENAI_API_KEY||"").trim()); }
+export function providerConfigured(){ return Boolean(String(env.OPENAI_API_KEY||"").trim()); }
 
 export async function loadAiSettings(){
   return await env.DB.prepare("SELECT id,provider,model,enabled,daily_run_limit AS dailyRunLimit,per_user_daily_limit AS perUserDailyLimit,max_context_chars AS maxContextChars,result_retention_days AS resultRetentionDays,require_review AS requireReview,allow_sensitive_sources AS allowSensitiveSources,updated_by AS updatedBy,updated_at AS updatedAt FROM ai_settings WHERE id=1").first<Row>() || defaultAiSettings;
@@ -67,7 +67,7 @@ export async function failAiRun(run:{id:string;startedAt:number},error:unknown){
   await env.DB.prepare("UPDATE ai_runs SET status='Failed',error=?,latency_ms=?,completed_at=datetime('now') WHERE id=?").bind(message,Date.now()-run.startedAt,run.id).run();
 }
 
-export async function findCachedArtifact(feature:string,entityType:string,entityId:unknown,inputHash:string){
-  return env.DB.prepare("SELECT * FROM ai_artifacts WHERE feature=? AND entity_type=? AND entity_id IS ? AND input_hash=? AND review_status!='Rejected' ORDER BY generated_at DESC LIMIT 1")
+export async function findCachedArtifact(feature:string,entityType:string,entityId:unknown,inputHash:string,currentOnly=false){
+  return env.DB.prepare(`SELECT a.*,(SELECT count(*) FROM ai_artifact_sources s WHERE s.artifact_id=a.id) AS source_count FROM ai_artifacts a WHERE a.feature=? AND a.entity_type=? AND a.entity_id IS ? AND a.input_hash=? AND a.review_status!='Rejected'${currentOnly?" AND a.superseded_by IS NULL":""} ORDER BY a.generated_at DESC LIMIT 1`)
     .bind(feature,entityType,entityId==null?null:String(entityId),inputHash).first<Row>();
 }

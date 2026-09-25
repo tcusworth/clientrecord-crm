@@ -1,11 +1,11 @@
 import { env } from "cloudflare:workers";
 import { audit, can, canAdmin, crmUser } from "@/lib/crm-auth";
-import { fromEmail, resend, resendConfigured, sendingIdentity } from "@/lib/resend";
 import { runDueAutomations } from "@/lib/operations";
 
 const clean = (value: unknown, fallback = "") => typeof value === "string" ? value.trim() : fallback;
 const money = (value: unknown) => Math.max(0, Math.round(Number(value || 0) * 100));
-const stages = ["Qualified", "Discovery", "Proposal", "Negotiation", "Won", "Lost"];
+// Same checks crm/sales apply to custom field values (app/api/crm customFieldChanges).
+const customFieldError = (fieldType: string, options: unknown, value: string) => value.length > 4000 ? "Custom field values are limited to 4,000 characters." : !value ? "" : fieldType === "number" && !Number.isFinite(Number(value)) ? "Enter a valid number in each number field." : fieldType === "date" && !/^\d{4}-\d{2}-\d{2}$/.test(value) ? "Enter a valid date in each date field." : fieldType === "boolean" && !["true", "false"].includes(value) ? "Choose Yes or No for each yes/no field." : fieldType === "select" && !(JSON.parse(String(options || "[]")) as string[]).includes(value) ? "Choose a configured option for each select field." : "";
 
 async function readAll(user: NonNullable<Awaited<ReturnType<typeof crmUser>>>) {
   const [deals, sources, sequences, steps, enrollments, fields, values, members, logs, integration] = await Promise.all([
@@ -40,33 +40,9 @@ async function readAll(user: NonNullable<Awaited<ReturnType<typeof crmUser>>>) {
   };
 }
 
-async function runDue(user: NonNullable<Awaited<ReturnType<typeof crmUser>>>) {
-  const due = await env.DB.prepare("SELECT e.id,e.sequence_id AS sequenceId,e.contact_id AS contactId,e.current_step AS currentStep,c.first_name AS firstName,c.last_name AS lastName,c.email FROM automation_enrollments e JOIN contacts c ON c.id=e.contact_id WHERE e.status='Active' AND e.next_run_at<=datetime('now') ORDER BY e.next_run_at LIMIT 100").all();
-  let processed = 0;
-  for (const row of due.results as Array<Record<string, unknown>>) {
-    const step = await env.DB.prepare("SELECT * FROM automation_steps WHERE sequence_id=? AND step_order=?").bind(row.sequenceId, row.currentStep).first<Record<string, unknown>>();
-    if (!step) { await env.DB.prepare("UPDATE automation_enrollments SET status='Completed',completed_at=datetime('now') WHERE id=?").bind(row.id).run(); continue; }
-    if (step.action_type === "email") {
-      if (!resendConfigured()) continue;
-      const identity = await sendingIdentity();
-      const body = String(step.body || "").replaceAll("{{first_name}}", String(row.firstName));
-      await resend("/emails", { method: "POST", body: JSON.stringify({ from: fromEmail(identity), to: [row.email], reply_to: identity.replyToEmail || undefined, subject: step.subject, html: `<div style=\"font:16px Arial;line-height:1.6\">${body.replaceAll("\n", "<br>")}</div>` }) });
-      await env.DB.prepare("INSERT INTO activities (contact_id,type,note,happened_at) VALUES (?,'Automated email',?,datetime('now'))").bind(row.contactId, `Sequence email: ${step.subject}`).run();
-    } else {
-      await env.DB.prepare("INSERT INTO tasks (contact_id,title,due_date,owner,status,completed) VALUES (?,?,date('now'),?,'Open',0)").bind(row.contactId, step.task_title || "Sequence follow-up", user.email).run();
-    }
-    const nextOrder = Number(row.currentStep) + 1;
-    const next = await env.DB.prepare("SELECT delay_days AS delayDays FROM automation_steps WHERE sequence_id=? AND step_order=?").bind(row.sequenceId, nextOrder).first<{ delayDays: number }>();
-    if (next) await env.DB.prepare("UPDATE automation_enrollments SET current_step=?,next_run_at=datetime('now',?) WHERE id=?").bind(nextOrder, `+${Math.max(0, next.delayDays)} days`, row.id).run();
-    else await env.DB.prepare("UPDATE automation_enrollments SET status='Completed',completed_at=datetime('now') WHERE id=?").bind(row.id).run();
-    processed++;
-  }
-  await audit(user, "automation.run", "sequence", null, `Processed ${processed} due automation steps`);
-  return processed;
-}
-
 export async function GET(request: Request) {
   const user = await crmUser(request); if (!user) return Response.json({ error: "Sign in is required." }, { status: 401 });
+  if (!can(user,"records.view")) return Response.json({ error: "View access is required." }, { status: 403 });
   try { return Response.json(await readAll(user)); } catch (error) { console.error(error); return Response.json({ error: "Sales workspace is temporarily unavailable." }, { status: 503 }); }
 }
 
@@ -74,6 +50,7 @@ export async function POST(request: Request) {
   const user = await crmUser(request); if (!user) return Response.json({ error: "Sign in is required." }, { status: 401 });
   const body = await request.json() as Record<string, unknown>, action = clean(body.action);
   if (!can(user,"records.edit")) return Response.json({ error: "Record-edit permission is required." }, { status: 403 });
+  if (["createSequence","enrollSequence","runAutomations"].includes(action) && !can(user,"campaigns.send")) return Response.json({ error: "Campaign send permission is required for email sequences." }, { status: 403 });
   try {
     if (action === "createDeal" || action === "updateDeal") return Response.json({error:"Use the configurable pipeline workspace to create or update deals."},{status:409});
     if (action === "saveSource") {
@@ -104,13 +81,15 @@ export async function POST(request: Request) {
     }
     if (action === "setFieldValue") {
       const definitionId = Number(body.definitionId), entityId = Number(body.entityId); if (!definitionId || !entityId) return Response.json({ error: "Field and record are required." }, { status: 400 });
-      await env.DB.batch([env.DB.prepare("DELETE FROM custom_field_values WHERE definition_id=? AND entity_type=? AND entity_id=?").bind(definitionId, clean(body.entityType, "contact"), entityId), env.DB.prepare("INSERT INTO custom_field_values (definition_id,entity_type,entity_id,value,updated_at) VALUES (?,?,?,?,datetime('now'))").bind(definitionId, clean(body.entityType, "contact"), entityId, clean(body.value))]);
+      const definition = await env.DB.prepare("SELECT entity_type AS entityType,field_type AS fieldType,options FROM custom_field_definitions WHERE id=?").bind(definitionId).first<Record<string, unknown>>(); if (!definition) return Response.json({ error: "Custom field not found." }, { status: 404 });
+      const entityType = String(definition.entityType), value = clean(body.value), invalid = customFieldError(String(definition.fieldType), definition.options, value); if (clean(body.entityType, entityType) !== entityType) return Response.json({ error: "That field does not belong to this record type." }, { status: 400 }); if (invalid) return Response.json({ error: invalid }, { status: 400 });
+      await env.DB.batch([env.DB.prepare("DELETE FROM custom_field_values WHERE definition_id=? AND entity_type=? AND entity_id=?").bind(definitionId, entityType, entityId), ...(value ? [env.DB.prepare("INSERT INTO custom_field_values (definition_id,entity_type,entity_id,value,updated_at) VALUES (?,?,?,?,datetime('now'))").bind(definitionId, entityType, entityId, value)] : [])]);
       await audit(user, action, "custom_field_value", entityId, "Updated custom field value", body); return Response.json({ status: "saved" });
     }
     if (action === "saveMember") {
       if (user.role !== "owner") return Response.json({ error: "Owner access is required." }, { status: 403 });
       const email = clean(body.email).toLowerCase(), role = ["admin", "editor", "viewer"].includes(clean(body.role)) ? clean(body.role) : "viewer"; if (!email) return Response.json({ error: "Email is required." }, { status: 400 });
-      await env.DB.prepare("INSERT INTO team_members (email,name,role,active,created_at,updated_at) VALUES (?,?,?,1,datetime('now'),datetime('now')) ON CONFLICT(email) DO UPDATE SET name=excluded.name,role=excluded.role,active=1,updated_at=datetime('now')").bind(email, clean(body.name), role).run();
+      await env.DB.prepare("INSERT INTO team_members (email,name,role,active,created_at,updated_at) VALUES (?,?,?,1,datetime('now'),datetime('now')) ON CONFLICT(email) DO UPDATE SET name=excluded.name,role=excluded.role,permissions=CASE WHEN team_members.role=excluded.role THEN team_members.permissions ELSE '{}' END,active=1,updated_at=datetime('now')").bind(email, clean(body.name), role).run();
       await audit(user, action, "team_member", email, `Granted ${role} access to ${email}`, { email, role }); return Response.json({ status: "saved" });
     }
     if (action === "disableMember") {

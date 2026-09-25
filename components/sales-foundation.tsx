@@ -10,13 +10,14 @@ import { AIRecordFieldsPanel } from "@/components/ai-record-fields";
 import { dealRequiredFieldOptions, defaultPipeline, type Pipeline, type Stage } from "@/lib/sales-rules";
 import { CustomFieldInput, customFieldValue, type CustomFieldDefinition, type CustomFieldValue } from "@/components/custom-fields";
 import { DealWorkspace } from "@/components/deal-workspace";
+import { Field } from "@/components/workspace-primitives";
+import type { ContactSummary as Contact, SalesDeal as Deal } from "@/lib/crm-types";
+import { money } from "@/lib/format";
 
 type Account={primary_contact_id:number|null;id:number;name:string;stage:string;notes:string;website:string;domain:string;industry:string;tier:string;territory:string;owner:string;tags:string;fit_score:number;fit_reason:string;intent_score:number;temperature:string;summary:string;headquarters:string;linkedin_url:string;logo_url:string;employee_range:string;enrichment_source:string;enrichment_confidence:number;enriched_at:string|null;updated_at:string};
 type EnrichmentProposal={website:string;domain:string;summary:string;industry:string;headquarters:string;linkedin_url:string;logo_url:string;employee_range:string;source:string;confidence:number;evidence:string[]};
-type Contact={id:number;name:string;email:string;company:string;title:string};
 type Stakeholder={id:number;company_id:number;contact_id:number;role:string;notes:string};
 type Signal={id:string;company_id:number;kind:string;summary:string;evidence:string;points:number;active:number;occurred_at:string};
-type Deal={id:number;name:string;company:string;company_id:number|null;contact_id:number|null;stage:string;stage_key:string|null;pipeline_key:string;owner:string;value:number;probability:number;next_step:string;close_date:string;lead_source:string;campaign:string;partner:string;forecast_category:string;closed_reason:string;stage_entered_at:string;status:string};
 type Task={id:number;deal_id:number;title:string;owner:string;due_date:string;completed:number};
 type History={id:number;deal_id:number;from_stage:string;to_stage:string;from_pipeline:string;to_pipeline:string;reason:string;actor:string;happened_at:string};
 type Alert={id:number;company_id:number;owner:string;message:string;created_at:string;read_at:string|null};
@@ -24,18 +25,16 @@ type Data={user:{email:string;role:string};companies:Account[];contacts:Contact[
 type Run=(action:string,payload:Record<string,unknown>)=>Promise<boolean>;
 const selectClass="h-10 min-w-0 w-full rounded-md border bg-white px-3 text-sm";
 const today=()=>new Date().toISOString().slice(0,10);
-const money=(n:number)=>new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",maximumFractionDigits:0}).format(n/100);
 const date=(v:string)=>v?new Date(v).toLocaleString():"Unknown";
 const accountRole=(value:string|undefined)=>value==="Colleague"?"Other":value==="Legal / procurement"?"Legal/procurement":value||"Other";
 function Panel({children,className=""}:{children:ReactNode;className?:string}){return <section className={"rounded-lg border bg-white p-5 shadow-[0_1px_2px_rgba(15,23,42,.03)] "+className}>{children}</section>}
-function Field({label,...props}:{label:string}&React.InputHTMLAttributes<HTMLInputElement>){return <label className="grid gap-1 text-sm font-medium">{label}<Input {...props}/></label>}
 function Select({label,children,...props}:{label:string;children:ReactNode}&React.SelectHTMLAttributes<HTMLSelectElement>){return <label className="grid gap-1 text-sm font-medium">{label}<select className={selectClass} {...props}>{children}</select></label>}
 function Temperature({value}:{value:string}){return <span className={"inline-flex rounded-full px-2.5 py-1 text-xs font-semibold "+(value==="Hot"?"bg-orange-100 text-orange-800":value==="Lukewarm"?"bg-amber-100 text-amber-800":"bg-sky-100 text-sky-800")}>{value}</span>}
 function Dialog({title,children,close}:{title:string;children:ReactNode;close:()=>void}){return <AccessibleDialog open onOpenChange={v=>{if(!v)close()}}><DialogContent aria-describedby={undefined} className="!inset-y-0 !left-auto !right-0 !top-0 flex !h-dvh !w-full !max-w-6xl !translate-x-0 !translate-y-0 flex-col gap-0 overflow-hidden !rounded-none border-l bg-[#f2f3f5] p-0"><div className="flex min-h-[84px] shrink-0 items-center gap-3 border-b bg-white px-5 py-3"><span className="grid h-11 w-11 place-items-center rounded-md bg-[#2f62d6] text-white"><Building2 size={20}/></span><div><div className="text-xs font-medium text-slate-500">Company</div><DialogTitle className="pr-8 text-xl font-semibold">{title}</DialogTitle></div></div><div className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden p-3"><div className="min-w-0 rounded-lg border bg-white p-5">{children}</div></div></DialogContent></AccessibleDialog>}
 function payload(e:FormEvent<HTMLFormElement>){e.preventDefault();return Object.fromEntries(new FormData(e.currentTarget).entries());}
 
-export function SalesFoundation({section}:{section:"companies"|"deals"}){
- if(section==="deals")return <DealWorkspace/>;
+export function SalesFoundation({section}:{section:"companies"|"deals"|"pipelines"}){return section==="deals"?<DealWorkspace/>:<SalesRecords section={section}/>}
+function SalesRecords({section}:{section:"companies"|"pipelines"}){
  const [data,setData]=useState<Data|null>(null),[error,setError]=useState(""),[busy,setBusy]=useState(false),[notice,setNotice]=useState("");
  const load=useCallback(async()=>{const r=await fetch("/api/sales",{cache:"no-store"}),d=await r.json() as Data & {error?:string};if(!r.ok)throw new Error(d.error);setData(d)},[]);
  useEffect(()=>{void load().catch(e=>setError(e.message))},[load]);

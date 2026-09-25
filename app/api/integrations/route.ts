@@ -1,25 +1,33 @@
 import { env } from "cloudflare:workers";
 import { audit, can, crmUser, sha256 } from "@/lib/crm-auth";
-import { googleConfigured } from "@/lib/google";
+import { googleConfigured, revokeGoogleToken } from "@/lib/google";
 import { importMeetilyEvent } from "@/lib/meetily-webhook";
-import { microsoftConfigured } from "@/lib/microsoft";
+import { decryptToken, microsoftConfigured } from "@/lib/microsoft";
+import { quickbooksConfigured, revokeQuickbooksToken } from "@/lib/quickbooks";
 
 type Row=Record<string,unknown>;
 const clean=(value:unknown,max=240)=>String(value??"").trim().slice(0,max);
+// Best-effort provider revocation; a failure is logged and never blocks the local disconnect. Microsoft has no token-revocation endpoint for this authorization-code flow, so its tokens are only deleted locally.
+async function revokeAtProvider(provider:string){
+  if(provider==="microsoft")return "not-supported";
+  const row=await env.DB.prepare("SELECT access_token,refresh_token FROM integration_accounts WHERE provider=?").bind(provider).first<Row>();if(!row)return "not-connected";
+  try{const token=await decryptToken(String(row.refresh_token||row.access_token));if(provider==="google")await revokeGoogleToken(token);else await revokeQuickbooksToken(token);return "revoked";}
+  catch(error){console.error(`${provider} token revocation failed`,error);return "failed";}
+}
 function token(prefix:string){const bytes=crypto.getRandomValues(new Uint8Array(30));let raw="";for(const byte of bytes)raw+=String.fromCharCode(byte);return `${prefix}${btoa(raw).replaceAll("+","-").replaceAll("/","_").replaceAll("=","")}`;}
 
 export async function GET(request:Request){
   const user=await crmUser(request);if(!user)return Response.json({error:"Sign in is required."},{status:401});
-  const accountRows=(await env.DB.prepare("SELECT provider,account_email AS accountEmail,sync_email AS syncEmail,sync_calendar AS syncCalendar,auto_tasks AS autoTasks,last_synced_at AS lastSyncedAt FROM integration_accounts WHERE provider IN ('microsoft','google')").all<Row>()).results;
-  const one=(provider:string)=>{const row=accountRows.find(item=>item.provider===provider);return {provider,configured:provider==="microsoft"?microsoftConfigured():googleConfigured(),connected:Boolean(row),accountEmail:row?.accountEmail||"",syncEmail:row?Boolean(row.syncEmail):true,syncCalendar:row?Boolean(row.syncCalendar):true,autoTasks:row?Boolean(row.autoTasks):true,lastSyncedAt:row?.lastSyncedAt||null};};
-  if(!can(user,"integrations.manage"))return Response.json({accounts:[one("microsoft"),one("google")],meetily:null});
+  const accountRows=(await env.DB.prepare("SELECT provider,account_email AS accountEmail,sync_email AS syncEmail,sync_calendar AS syncCalendar,auto_tasks AS autoTasks,last_synced_at AS lastSyncedAt FROM integration_accounts WHERE provider IN ('microsoft','google','quickbooks')").all<Row>()).results;
+  const one=(provider:string)=>{const row=accountRows.find(item=>item.provider===provider);return {provider,configured:provider==="microsoft"?microsoftConfigured():provider==="quickbooks"?quickbooksConfigured():googleConfigured(),connected:Boolean(row),accountEmail:row?.accountEmail||"",syncEmail:row?Boolean(row.syncEmail):true,syncCalendar:row?Boolean(row.syncCalendar):true,autoTasks:row?Boolean(row.autoTasks):true,lastSyncedAt:row?.lastSyncedAt||null};};
+  if(!can(user,"integrations.manage"))return Response.json({accounts:[one("microsoft"),one("google"),one("quickbooks")],meetily:null});
   const [keys,events,deals]=await Promise.all([
     env.DB.prepare("SELECT scopes FROM api_keys WHERE revoked_at IS NULL AND (expires_at IS NULL OR expires_at>datetime('now'))").all<Row>(),
     env.DB.prepare("SELECT id,external_id AS externalId,event_type AS eventType,subject,occurred_at AS occurredAt,status,deal_id AS dealId,meeting_id AS meetingId,error,duplicate_count AS duplicateCount,received_at AS receivedAt,processed_at AS processedAt FROM meetily_webhook_events ORDER BY received_at DESC LIMIT 100").all<Row>(),
     env.DB.prepare("SELECT id,name,company,stage,owner FROM deals WHERE status='Open' ORDER BY updated_at DESC,name").all<Row>(),
   ]);
   const tokenExists=keys.results.some(row=>String(row.scopes||"").split(",").map(value=>value.trim()).some(scope=>scope==="*"||scope==="meetings.import"));
-  return Response.json({accounts:[one("microsoft"),one("google")],meetily:{endpoint:`${new URL(request.url).origin}/api/integrations/meetily/meetings`,tokenExists,events:events.results,deals:deals.results}});
+  return Response.json({accounts:[one("microsoft"),one("google"),one("quickbooks")],meetily:{endpoint:`${new URL(request.url).origin}/api/integrations/meetily/meetings`,tokenExists,events:events.results,deals:deals.results}});
 }
 
 export async function POST(request:Request){
@@ -43,9 +51,9 @@ export async function POST(request:Request){
       await audit(user,action,"meetily_event",eventId,"Dismissed unmatched Meetily meeting");return Response.json({status:"Dismissed"});
     }
     const provider=clean(body.provider);
-    if(!["microsoft","google"].includes(provider))return Response.json({error:"Unknown provider."},{status:400});
+    if(!["microsoft","google","quickbooks"].includes(provider))return Response.json({error:"Unknown provider."},{status:400});
     if(action==="savePreferences"){await env.DB.prepare("UPDATE integration_accounts SET sync_email=?,sync_calendar=?,auto_tasks=?,updated_at=datetime('now') WHERE provider=?").bind(body.syncEmail?1:0,body.syncCalendar?1:0,body.autoTasks?1:0,provider).run();await audit(user,"integration.preferences","integration",provider,"Updated synchronization preferences",{syncEmail:body.syncEmail,syncCalendar:body.syncCalendar,autoTasks:body.autoTasks});return Response.json({status:"saved"});}
-    if(action==="disconnect"){await env.DB.prepare("DELETE FROM integration_accounts WHERE provider=?").bind(provider).run();await audit(user,"integration.disconnect","integration",provider,`Disconnected ${provider}`);return Response.json({status:"disconnected"});}
+    if(action==="disconnect"){const revocation=await revokeAtProvider(provider);await env.DB.prepare("DELETE FROM integration_accounts WHERE provider=?").bind(provider).run();await audit(user,"integration.disconnect","integration",provider,`Disconnected ${provider}`,{revocation});return Response.json({status:"disconnected",revocation});}
     return Response.json({error:"Unknown action."},{status:400});
   }catch(error){console.error(error);return Response.json({error:error instanceof Error?error.message:"The integration action failed."},{status:500});}
 }

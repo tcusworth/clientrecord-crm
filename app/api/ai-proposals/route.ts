@@ -1,7 +1,8 @@
 import { env } from "cloudflare:workers";
-import { assertAiRunAllowed, beginAiRun, completeAiRun, failAiRun, loadAiSettings, providerConfigured } from "@/lib/ai-governance";
+import { loadAiSettings, providerConfigured } from "@/lib/ai-governance";
+import { aiMode, runAiArtifact } from "@/lib/ai-runner";
 import { buildDeterministicProposalDraft, normalizeProposalDraft, proposalDraftSchema, type ProposalDraft } from "@/lib/ai-proposals";
-import { audit, can, crmUser, sha256, type CRMUser } from "@/lib/crm-auth";
+import { audit, can, crmUser, type CRMUser } from "@/lib/crm-auth";
 
 type Row=Record<string,unknown>;
 const clean=(value:unknown,max=4000)=>String(value??"").trim().slice(0,max);
@@ -11,12 +12,6 @@ const rows=async(sql:string,...args:(string|number|null)[])=>(await env.DB.prepa
 const one=async(sql:string,...args:(string|number|null)[])=>env.DB.prepare(sql).bind(...args).first<Row>();
 const parse=(value:unknown,fallback:unknown={})=>{try{return JSON.parse(String(value??""))}catch{return fallback}};
 const denied=(user:CRMUser|null,permission:"ai.view"|"ai.generate"|"ai.review"|"records.edit")=>!user?Response.json({error:"Sign in is required."},{status:401}):!can(user,permission)?Response.json({error:`${permission} permission is required.`},{status:403}):null;
-
-function outputText(response:Row){
-  if(typeof response.output_text==="string")return response.output_text;
-  const output=Array.isArray(response.output)?response.output:[];
-  return output.flatMap(item=>{const row=item as Row;return Array.isArray(row.content)?row.content:[]}).map(item=>{const row=item as Row;return row.type==="output_text"?clean(row.text,40000):""}).join("");
-}
 
 function artifact(row:Row){
   return {id:String(row.id),reviewStatus:String(row.review_status),content:normalizeProposalDraft(parse(row.content_json)),explanation:clean(row.explanation),confidence:Number(row.confidence||0),provider:String(row.provider),model:String(row.model),promptVersion:Number(row.prompt_version||1),rulesVersion:String(row.rules_version),generatedBy:String(row.generated_by),generatedAt:String(row.generated_at),reviewedBy:row.reviewed_by?String(row.reviewed_by):null,reviewedAt:row.reviewed_at?String(row.reviewed_at):null,sourceCount:Number(row.source_count||0)};
@@ -37,14 +32,8 @@ async function context(id:number){
   return {deal,company,stakeholders,lineItems,insights,notes,activities,meetings,proposals};
 }
 
-async function modelDraft(input:string,settings:Row,prompt:Row|null){
-  const key=clean((env as unknown as Record<string,unknown>).OPENAI_API_KEY,1000),system=clean(prompt?.system_prompt,30000)||"Draft a concise, professional B2B proposal using only the supplied ClientRecord CRM records. Do not invent facts, dates, commitments, pricing, deliverables, legal terms, customer claims, or approvals. Clearly put missing information in dataGaps and use [Confirm …] placeholders in the body where needed. The draft must be human reviewed before sharing.";
-  const response=await fetch("https://api.openai.com/v1/responses",{method:"POST",headers:{authorization:`Bearer ${key}`,"content-type":"application/json"},body:JSON.stringify({model:String(settings.model),input:[{role:"system",content:system},{role:"user",content:input}],max_output_tokens:3600,text:{format:{type:"json_schema",name:"clientrecord_proposal_draft",strict:true,schema:proposalDraftSchema}}})});
-  const payload=await response.json() as Row;if(!response.ok)throw new Error(clean((payload.error as Row|undefined)?.message,1200)||`AI provider returned ${response.status}.`);const text=outputText(payload);if(!text)throw new Error("The AI provider returned no proposal.");return normalizeProposalDraft(JSON.parse(text));
-}
-
 async function generate(id:number,user:CRMUser,force:boolean){
-  const settings=await loadAiSettings(),data=await context(id),prompt=await one("SELECT * FROM ai_prompt_versions WHERE feature='proposal-draft' AND status='Active' ORDER BY version DESC LIMIT 1");
+  const data=await context(id);
   const sourceGroups=[
     {type:"deal",id:String(id),updatedAt:clean(data.deal.updated_at),value:data.deal,excerpt:`${clean(data.deal.name,240)} · ${clean(data.deal.stage,120)}`},
     ...(data.company?[{type:"company",id:String(data.company.id),updatedAt:clean(data.company.updated_at),value:data.company,excerpt:clean(data.company.name,240)}]:[]),
@@ -55,20 +44,8 @@ async function generate(id:number,user:CRMUser,force:boolean){
     {type:"activities",id:data.activities.map(item=>item.id).join(",")||"none",updatedAt:clean(data.activities[0]?.updated_at||data.deal.updated_at),value:data.activities,excerpt:data.activities.slice(0,5).map(item=>clean(item.subject||item.body,160)).join("; ")},
     {type:"meetings",id:data.meetings.map(item=>item.id).join(",")||"none",updatedAt:clean(data.meetings[0]?.updated_at||data.deal.updated_at),value:data.meetings,excerpt:data.meetings.slice(0,4).map(item=>clean(item.subject,160)).join("; ")},
   ];
-  const input=JSON.stringify({instruction:"Create a reviewable proposal draft. Use only the records below.",...data}).slice(0,Number(settings.maxContextChars)),hashInput=JSON.stringify({input,promptVersion:Number(prompt?.version||1),model:settings.enabled?settings.model:"proposal-rules-v1"}),inputHash=await sha256(hashInput);
-  if(!force){const cached=await one("SELECT a.*,(SELECT count(*) FROM ai_artifact_sources s WHERE s.artifact_id=a.id) AS source_count FROM ai_artifacts a WHERE a.feature='proposal-draft' AND a.entity_type='deal' AND a.entity_id=? AND a.input_hash=? AND a.review_status!='Rejected' ORDER BY a.generated_at DESC LIMIT 1",String(id),inputHash);if(cached)return {artifact:artifact(cached),cached:true,mode:String(cached.provider)==="openai"?"Model-backed":"Source-backed"};}
-  let draft:ProposalDraft,run:null|{id:string;startedAt:number}=null,provider="clientrecord",model="proposal-rules-v1";
-  if(Boolean(settings.enabled)&&providerConfigured()){
-    const allowed=await assertAiRunAllowed(user);provider=String(allowed.provider);model=String(allowed.model);run=await beginAiRun({feature:"proposal-draft",entityType:"deal",entityId:id,requestedBy:user.email,provider,model,promptVersion:Number(prompt?.version||1),sourceCount:sourceGroups.length,input:hashInput});
-    try{draft=await modelDraft(input,allowed,prompt);await completeAiRun(run,JSON.stringify(draft))}catch(error){await failAiRun(run,error);throw error}
-  }else draft=buildDeterministicProposalDraft(data);
-  const artifactId=crypto.randomUUID(),generatedAt=new Date().toISOString(),confidence=draft.confidence==="High"?90:draft.confidence==="Medium"?70:40,sources=await Promise.all(sourceGroups.map(async source=>({...source,hash:await sha256(JSON.stringify(source.value))})));
-  await env.DB.batch([
-    env.DB.prepare("UPDATE ai_artifacts SET superseded_by=? WHERE feature='proposal-draft' AND entity_type='deal' AND entity_id=? AND superseded_by IS NULL").bind(artifactId,String(id)),
-    env.DB.prepare("INSERT INTO ai_artifacts(id,run_id,feature,entity_type,entity_id,review_status,content_json,original_content_json,explanation,confidence,provider,model,prompt_version,rules_version,input_hash,generated_by,generated_at) VALUES (?,?,'proposal-draft','deal',?,'Draft',?,?,?,?,?,?,?,?,?,?,?)").bind(artifactId,run?.id||null,String(id),JSON.stringify(draft),JSON.stringify(draft),draft.explanation,confidence,provider,model,Number(prompt?.version||1),"proposal-draft-v1",inputHash,user.email,generatedAt),
-    ...sources.map(source=>env.DB.prepare("INSERT INTO ai_artifact_sources(artifact_id,source_type,source_id,source_updated_at,content_hash,excerpt) VALUES (?,?,?,?,?,?)").bind(artifactId,source.type,source.id,source.updatedAt||null,source.hash,source.excerpt)),
-  ]);
-  return {artifact:artifact({id:artifactId,review_status:"Draft",content_json:JSON.stringify(draft),explanation:draft.explanation,confidence,provider,model,prompt_version:Number(prompt?.version||1),rules_version:"proposal-draft-v1",generated_by:user.email,generated_at:generatedAt,source_count:sources.length}),cached:false,mode:provider==="openai"?"Model-backed":"Source-backed"};
+  const result=await runAiArtifact<ProposalDraft>({feature:"proposal-draft",entityType:"deal",entityId:String(id),user,force,instruction:"Create a reviewable proposal draft. Use only the records below.",data,rulesModel:"proposal-rules-v1",rulesVersion:"proposal-draft-v1",sources:sourceGroups.map(({value,...source})=>({...source,content:JSON.stringify(value)})),rules:()=>buildDeterministicProposalDraft(data),model:{schema:proposalDraftSchema,schemaName:"clientrecord_proposal_draft",maxOutputTokens:3600,normalize:normalizeProposalDraft,emptyMessage:"The AI provider returned no proposal.",system:"Draft a concise, professional B2B proposal using only the supplied ClientRecord CRM records. Do not invent facts, dates, commitments, pricing, deliverables, legal terms, customer claims, or approvals. Clearly put missing information in dataGaps and use [Confirm …] placeholders in the body where needed. The draft must be human reviewed before sharing."}});
+  return {artifact:artifact(result.row),cached:result.cached,mode:aiMode(result.row.provider)};
 }
 
 export async function GET(request:Request){

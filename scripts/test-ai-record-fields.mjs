@@ -1,14 +1,7 @@
-/* eslint-disable @next/next/no-assign-module-variable */
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import vm from "node:vm";
-import { DatabaseSync } from "node:sqlite";
-import ts from "typescript";
+import { createTestContext } from "./test-helpers.mjs";
 
-const modules={},env={};
-function load(file){if(modules[file])return modules[file];const module={exports:{}};const code=ts.transpileModule(fs.readFileSync(file,"utf8"),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText;const require=name=>name==="cloudflare:workers"?{env}:name.startsWith("@/")?load(name.slice(2)+".ts"):(()=>{throw new Error(`Unexpected module ${name}`)})();vm.runInThisContext(`(function(require,module,exports){${code}\n})`,{filename:file})(require,module,module.exports);modules[file]=module.exports;return module.exports}
-const sqlite=new DatabaseSync(":memory:");sqlite.exec("PRAGMA foreign_keys=ON");for(const file of fs.readdirSync("drizzle").filter(file=>file.endsWith(".sql")).sort())sqlite.exec(fs.readFileSync(`drizzle/${file}`,"utf8"));
-const DB={prepare(sql){return{args:[],bind(...args){this.args=args;return this},async all(){return{results:sqlite.prepare(sql).all(...this.args)}},async first(){return sqlite.prepare(sql).get(...this.args)||null},async run(){const result=sqlite.prepare(sql).run(...this.args);return{meta:{last_row_id:Number(result.lastInsertRowid),changes:result.changes}}}}},async batch(statements){sqlite.exec("BEGIN");try{const results=[];for(const statement of statements)results.push(await statement.run());sqlite.exec("COMMIT");return results}catch(error){sqlite.exec("ROLLBACK");throw error}}};env.DB=DB;env.CRM_ALLOWED_EMAILS="owner@example.com";
+const { sqlite, load } = createTestContext();
 sqlite.exec(`
 INSERT INTO companies(id,name,industry,tier,territory,owner,stage,notes,fit_score,intent_score,temperature,updated_at) VALUES (1,'Acme Industries','Manufacturing','','West','owner@example.com','Opportunity','Strategic account',86,70,'Hot','2026-09-20T12:00:00Z');
 INSERT INTO contacts(id,first_name,last_name,email,company,title,stage,created_at,updated_at) VALUES (1,'Casey','Champion','casey@acme.test','Acme Industries','VP Operations','Opportunity','2026-01-01','2026-09-20');
@@ -28,7 +21,7 @@ const route=load("app/api/ai-record-fields/route.ts"),headers={"oai-authenticate
 async function get(type,id=1){const response=await route.GET(new Request(`https://test/api/ai-record-fields?entityType=${type}&entityId=${id}`,{headers})),body=await response.json();assert.equal(response.status,200,JSON.stringify(body));return body}
 async function post(type,payload,id=1,expected=200){const response=await route.POST(new Request("https://test/api/ai-record-fields",{method:"POST",headers,body:JSON.stringify({entityType:type,entityId:id,...payload})})),body=await response.json();assert.equal(response.status,expected,JSON.stringify(body));return body}
 
-const company=await post("company",{action:"generate"});assert.equal(company.mode,"Source-backed");assert.equal(company.artifact.content.fields["icp-tier"].value,"Tier 1");await post("company",{action:"review",artifactId:company.artifact.id,status:"Accepted"});assert.equal((await get("company")).fields.length,3);
+const company=await post("company",{action:"generate"});assert.equal(company.mode,"Rules-based");assert.equal(company.artifact.content.fields["icp-tier"].value,"Tier 1");await post("company",{action:"review",artifactId:company.artifact.id,status:"Accepted"});assert.equal((await get("company")).fields.length,3);
 const contact=await post("contact",{action:"generate"});assert.equal(contact.artifact.content.fields.persona.value,"Executive sponsor");assert.equal(contact.artifact.content.fields["influence-level"].value,"High");
 const deal=await post("deal",{action:"generate"});assert.equal(deal.artifact.content.fields["buying-stage"].value,"Commercial evaluation");assert.match(deal.artifact.content.fields["deal-risk-summary"].value,/open risk/);assert.equal(deal.artifact.content.fields["recommended-next-action"].value,"Complete the overdue security follow-up");for(const item of Object.values(deal.artifact.content.meddpicc)){if(item.status!=="Unknown"){assert.ok(item.citations.length);assert.ok(item.citations.every(citation=>["activity","note","stakeholder","meeting"].includes(citation.sourceType)))}}
 await post("deal",{action:"review",artifactId:deal.artifact.id,status:"Accepted"});let state=await get("deal");assert.equal(state.fields.length,11);assert.equal(state.fields.find(field=>field.fieldKey==="meddpicc.champion").value,"Confirmed");

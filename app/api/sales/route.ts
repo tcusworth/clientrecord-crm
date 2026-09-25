@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { can, canAdmin, crmUser } from "@/lib/crm-auth";
+import { audit, can, canAdmin, crmUser } from "@/lib/crm-auth";
 import { defaultPipeline, relationshipRoles, signalPoints, validateStages, type Pipeline } from "@/lib/sales-rules";
 import { chooseCompanyDomain, enrichCompanyApollo, enrichCompanyWebsite, normalizedCompanyDomain } from "@/lib/company-enrichment";
 
@@ -13,10 +13,6 @@ async function pipelines():Promise<Pipeline[]> {
   const saved=await rows("SELECT * FROM sales_pipelines ORDER BY name");
   const list=saved.map(r=>({id:String(r.id),name:String(r.name),stages:JSON.parse(String(r.stages))}));
   return list.some(p=>p.id==="default")?list:[defaultPipeline,...list];
-}
-function auditStatement(email:string,action:string,id:string,before:unknown,after:unknown){
-  return db().prepare("INSERT INTO audit_logs(actor_email,action,entity_type,entity_id,summary,changes,created_at) VALUES (?,?,?,?,?,?,?)")
-    .bind(email,action,"sales",id,action,JSON.stringify({before,after}),new Date().toISOString());
 }
 async function customFieldValues(body:Row,entityType:"company"){
   const definitions=await rows("SELECT id,field_type AS fieldType,options FROM custom_field_definitions WHERE entity_type=?",entityType);
@@ -46,6 +42,7 @@ function recalculate(id:number|string,actor:string){
 }
 export async function GET(request:Request){
   const user=await crmUser(request);if(!user)return Response.json({error:"Sign in is required."},{status:401});
+  if(!can(user,"records.view"))return Response.json({error:"View access is required."},{status:403});
   try{
     const accountId=Number(new URL(request.url).searchParams.get("account"));
     if(accountId){
@@ -76,7 +73,7 @@ export async function GET(request:Request){
       rows("SELECT id,entity_type AS entityType,name,field_key AS fieldKey,field_type AS fieldType,options FROM custom_field_definitions WHERE entity_type='company' ORDER BY name"),
       rows("SELECT definition_id AS definitionId,entity_type AS entityType,entity_id AS entityId,value FROM custom_field_values WHERE entity_type='company'"),
     ]);
-    return Response.json({user,companies,contacts,stakeholders,deals:deals.map(d=>({...d,status:!d.stage_key&&["Won","Lost"].includes(String(d.stage))?d.stage:d.status})),tasks,history,signals,alerts,pipelines:pipe,customFields:customFields.map(field=>({...field,options:JSON.parse(String(field.options||"[]"))})),customFieldValues:customValues,signalPoints,relationshipRoles,apolloConfigured:Boolean(String((env as unknown as Record<string,unknown>).APOLLO_API_KEY||"").trim())});
+    return Response.json({user,companies,contacts,stakeholders,deals:deals.map(d=>({...d,status:!d.stage_key&&["Won","Lost"].includes(String(d.stage))?d.stage:d.status})),tasks,history,signals,alerts,pipelines:pipe,customFields:customFields.map(field=>({...field,options:JSON.parse(String(field.options||"[]"))})),customFieldValues:customValues,signalPoints,relationshipRoles,apolloConfigured:Boolean(String(env.APOLLO_API_KEY||"").trim())});
   }catch(error){console.error(error);return Response.json({error:"Sales foundation could not load."},{status:503});}
 }
 export async function POST(request:Request){
@@ -97,7 +94,7 @@ export async function POST(request:Request){
       if(!company)throw new Error("Company not found.");
       const emails=await rows("SELECT email FROM contacts WHERE lower(company)=lower(?) AND email<>''",String(company.name));
       const domain=chooseCompanyDomain(company.domain,company.website,emails.map(row=>row.email));
-      const apiKey=String((env as unknown as Record<string,unknown>).APOLLO_API_KEY||"");
+      const apiKey=String(env.APOLLO_API_KEY||"");
       const proposal=await enrichCompanyApollo(apiKey,{name:String(company.name),domain,website:str(company.website),linkedinUrl:str(company.linkedin_url)});
       return Response.json({proposal});
     }
@@ -110,7 +107,7 @@ export async function POST(request:Request){
       if(!updates.length)throw new Error("Select at least one enrichment field to apply.");
       const source=str(b.source).slice(0,1000),confidence=number(b.confidence,0,100),setSql=updates.map(item=>`${item.column}=?`).join(",");
       const mutation=db().prepare(`UPDATE companies SET ${setSql},enrichment_source=?,enrichment_confidence=?,enriched_at=?,updated_at=? WHERE id=?`).bind(...updates.map(item=>item.value),source,confidence,now,now,id);
-      await db().batch([mutation,auditStatement(user.email,action,String(id),before,{fields:Object.fromEntries(updates.map(item=>[item.column,item.value])),source,confidence})]);
+      await db().batch([mutation]);await audit(user,action,"sales",String(id),action,{before,after:{fields:Object.fromEntries(updates.map(item=>[item.column,item.value])),source,confidence}});
       return Response.json({ok:true});
     }else if(action==="deleteCompany"){
       const id=number(b.company_id,1,1e12),before=await db().prepare("SELECT * FROM companies WHERE id=?").bind(id).first<Row>();
@@ -127,8 +124,7 @@ export async function POST(request:Request){
         db().prepare("DELETE FROM custom_field_values WHERE entity_type='company' AND entity_id=?").bind(id),
         db().prepare("DELETE FROM ai_record_fields WHERE entity_type='company' AND entity_id=?").bind(id),
         db().prepare("DELETE FROM companies WHERE id=?").bind(id),
-        auditStatement(user.email,action,String(id),before,{retained:"Contacts, deals, documents and historical activity were unlinked."}),
-      ]);
+      ]);await audit(user,action,"sales",String(id),action,{before,after:{retained:"Contacts, deals, documents and historical activity were unlinked."}});
       return Response.json({ok:true});
     }else if(action==="saveAccount"){
       const name=requireText(b.name,"Company name"),owner=requireText(b.owner,"Owner email").toLowerCase(),fit=number(b.fit_score);
@@ -142,8 +138,8 @@ export async function POST(request:Request){
         db().prepare("INSERT INTO companies(name,stage,notes,updated_at,website,domain,industry,tier,territory,owner,tags,fit_score,fit_reason,summary,headquarters,linkedin_url,logo_url,employee_range) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(name) DO UPDATE SET stage=excluded.stage,notes=excluded.notes,updated_at=excluded.updated_at,website=excluded.website,domain=excluded.domain,industry=excluded.industry,tier=excluded.tier,territory=excluded.territory,owner=excluded.owner,tags=excluded.tags,fit_score=excluded.fit_score,fit_reason=excluded.fit_reason,summary=excluded.summary,headquarters=excluded.headquarters,linkedin_url=excluded.linkedin_url,logo_url=excluded.logo_url,employee_range=excluded.employee_range")
           .bind(name,str(b.stage)||"Prospect",str(b.notes),now,str(b.website),str(b.domain).toLowerCase().replace(/^https?:\/\//,"").replace(/^www\./,"").replace(/\/$/,""),str(b.industry),str(b.tier),str(b.territory),owner,tags,fit,str(b.fit_reason),str(b.summary),str(b.headquarters),str(b.linkedin_url),str(b.logo_url),str(b.employee_range)),
         ...(Object.hasOwn(b,"primary_contact_id")?[db().prepare("UPDATE companies SET primary_contact_id=? WHERE name=?").bind(b.primary_contact_id?number(b.primary_contact_id,1,1e12):null,name)]:[]),
-        ...recalculate(name,user.email),auditStatement(user.email,action,name,before,b),
-      ]);
+        ...recalculate(name,user.email),
+      ]);await audit(user,action,"sales",name,action,{before,after:b});
       const id=before?Number(before.id):Number(result[0].meta.last_row_id);
       if(fieldValues.length){
         const changes=fieldValues.flatMap(field=>[
@@ -158,10 +154,10 @@ export async function POST(request:Request){
       const company=number(b.company_id,1,1e12),contact=number(b.contact_id,1,1e12),role=str(b.role);
       if(!relationshipRoles.includes(role))throw new Error("Choose a valid relationship role.");
       const before=await db().prepare("SELECT * FROM account_stakeholders WHERE company_id=? AND contact_id=?").bind(company,contact).first();
-      await db().batch([db().prepare("INSERT INTO account_stakeholders(company_id,contact_id,role,notes) VALUES (?,?,?,?) ON CONFLICT(company_id,contact_id) DO UPDATE SET role=excluded.role,notes=excluded.notes").bind(company,contact,role,str(b.notes)),auditStatement(user.email,action,String(company),before,b)]);
+      await db().batch([db().prepare("INSERT INTO account_stakeholders(company_id,contact_id,role,notes) VALUES (?,?,?,?) ON CONFLICT(company_id,contact_id) DO UPDATE SET role=excluded.role,notes=excluded.notes").bind(company,contact,role,str(b.notes))]);await audit(user,action,"sales",String(company),action,{before,after:b});
     }else if(action==="removeStakeholder"){
       const before=await db().prepare("SELECT * FROM account_stakeholders WHERE id=?").bind(number(b.id,1,1e12)).first();
-      await db().batch([db().prepare("DELETE FROM account_stakeholders WHERE id=?").bind(b.id),auditStatement(user.email,action,String(b.id),before,null)]);
+      await db().batch([db().prepare("DELETE FROM account_stakeholders WHERE id=?").bind(b.id)]);await audit(user,action,"sales",String(b.id),action,{before,after:null});
     }else if(action==="saveSignal"||action==="withdrawSignal"){
       let company:number;
       let mutation:D1PreparedStatement;
@@ -178,7 +174,7 @@ export async function POST(request:Request){
         company=Number((before as Row).company_id);
         mutation=db().prepare("UPDATE account_signals SET active=0 WHERE id=?").bind(str(b.id));
       }
-      await db().batch([mutation,...recalculate(company,user.email),auditStatement(user.email,action,String(company),before,b)]);
+      await db().batch([mutation,...recalculate(company,user.email)]);await audit(user,action,"sales",String(company),action,{before,after:b});
     }else if(action==="readAlert"){
       await db().prepare("UPDATE qualification_alerts SET read_at=? WHERE id=? AND (owner=? OR ?=1)").bind(now,number(b.id,1,1e12),user.email,canAdmin(user.role)?1:0).run();
     }else if(action==="savePipeline"){
@@ -191,8 +187,7 @@ export async function POST(request:Request){
       await db().batch([
         db().prepare("INSERT INTO sales_pipelines(id,name,stages,updated_at) VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,stages=excluded.stages,updated_at=excluded.updated_at").bind(id,name,JSON.stringify(stages),now),
         ...stages.map(s=>db().prepare("UPDATE deals SET stage_key=?,stage=?,probability=?,status=? WHERE pipeline_key=? AND COALESCE(stage_key,stage)=?").bind(s.key,s.name,s.probability,s.kind,id,s.key)),
-        auditStatement(user.email,action,id,before,{name,stages}),
-      ]);
+      ]);await audit(user,action,"sales",id,action,{before,after:{name,stages}});
     }else if(action==="saveDeal"){
       const id=b.id?number(b.id,1,1e12):0,before=id?await db().prepare("SELECT * FROM deals WHERE id=?").bind(id).first<Row>():null;
       if(id&&!before)throw new Error("Deal not found.");
@@ -205,7 +200,7 @@ export async function POST(request:Request){
       const value=Math.round(number(b.value,0,1e10)*100),contact=b.contact_id?number(b.contact_id,1,1e12):null;
       let companyId=b.company_id?number(b.company_id,1,1e12):null,company:{id?:number;name:string}|null=companyId?await db().prepare("SELECT name FROM companies WHERE id=?").bind(companyId).first<{name:string}>():null;
       // Preserve compatibility with older clients while converting the stored name into a durable relationship.
-      if(!companyId&&str(b.company)){company=await db().prepare("SELECT id,name FROM companies WHERE lower(name)=lower(?) LIMIT 1").bind(str(b.company)).first<{id:number;name:string}>();if(company)companyId=company.id}
+      if(!companyId&&str(b.company)){company=await db().prepare("SELECT id,name FROM companies WHERE lower(name)=lower(?) LIMIT 1").bind(str(b.company)).first<{id:number;name:string}>();if(company)companyId=company.id??null}
       if(companyId&&!company)throw new Error("Choose an existing company record.");
       if(companyId&&contact&&!(await db().prepare("SELECT c.id FROM contacts c WHERE c.id=? AND (lower(trim(coalesce(c.company,'')))=lower(trim(?)) OR EXISTS (SELECT 1 FROM account_stakeholders s WHERE s.company_id=? AND s.contact_id=c.id)) LIMIT 1").bind(contact,company!.name,companyId).first()))throw new Error("Choose a contact associated with the selected company.");
       const required=stage.requiredFields||[];
@@ -222,17 +217,17 @@ export async function POST(request:Request){
       const mutation=id?db().prepare("UPDATE deals SET name=?,company=?,company_id=?,contact_id=?,stage=?,owner=?,value=?,probability=?,next_step=?,close_date=?,lead_source=?,campaign=?,partner=?,forecast_category=?,status=?,pipeline_key=?,stage_key=?,closed_reason=?,stage_entered_at=?,updated_at=? WHERE id=?").bind(...params,id):db().prepare("INSERT INTO deals(name,company,company_id,contact_id,stage,owner,value,probability,next_step,close_date,lead_source,campaign,partner,forecast_category,status,pipeline_key,stage_key,closed_reason,stage_entered_at,updated_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").bind(...params,now);
       // last_insert_rowid refers to the preceding deal insert inside this transaction.
       const history=db().prepare("INSERT INTO deal_stage_history(deal_id,from_stage,to_stage,from_pipeline,to_pipeline,reason,actor,happened_at) VALUES ("+(id?"?":"last_insert_rowid()")+",?,?,?,?,?,?,?)").bind(...(id?[id]:[]),String(before?.stage||"Created"),stage.name,String(before?.pipeline_key||""),pipe.id,reason,user.email,now);
-      await db().batch([mutation,...(changed?[history]:[]),auditStatement(user.email,action,String(id||"new"),before,b)]);
+      const [written]=await db().batch([mutation,...(changed?[history]:[])]);await audit(user,action,"sales",String(id||written?.meta.last_row_id||"new"),action,{before,after:b});
       if(changed&&contact){
         await db().prepare("INSERT INTO automation_enrollments(sequence_id,contact_id,current_step,status,next_run_at,enrolled_at) SELECT s.id,?,0,'Active',datetime('now','+'||COALESCE((SELECT delay_days FROM automation_steps WHERE sequence_id=s.id ORDER BY step_order LIMIT 1),0)||' days'),? FROM automation_sequences s WHERE s.active=1 AND s.trigger_type='Deal stage' AND lower(s.trigger_value)=lower(?) AND NOT EXISTS(SELECT 1 FROM automation_enrollments e WHERE e.sequence_id=s.id AND e.contact_id=? AND e.status='Active')").bind(contact,now,stage.name,contact).run();
       }
     }else if(action==="saveTask"){
       const id=number(b.deal_id,1,1e12),due=requireText(b.due_date,"Due date");
       if(!/^\d{4}-\d{2}-\d{2}$/.test(due)||!Number.isFinite(Date.parse(due)))throw new Error("Choose a valid due date.");
-      await db().batch([db().prepare("INSERT INTO deal_tasks(deal_id,title,owner,due_date,created_at) VALUES (?,?,?,?,?)").bind(id,requireText(b.title,"Task title"),requireText(b.owner,"Task owner"),due,now),auditStatement(user.email,action,String(id),null,b)]);
+      await db().batch([db().prepare("INSERT INTO deal_tasks(deal_id,title,owner,due_date,created_at) VALUES (?,?,?,?,?)").bind(id,requireText(b.title,"Task title"),requireText(b.owner,"Task owner"),due,now)]);await audit(user,action,"sales",String(id),action,{before:null,after:b});
     }else if(action==="completeTask"||action==="toggleDealTask"){
       const before=await db().prepare("SELECT * FROM deal_tasks WHERE id=?").bind(number(b.id,1,1e12)).first();
-      await db().batch([db().prepare("UPDATE deal_tasks SET completed=? WHERE id=?").bind(b.completed?1:0,b.id),auditStatement(user.email,action,String(b.id),before,b)]);
+      await db().batch([db().prepare("UPDATE deal_tasks SET completed=? WHERE id=?").bind(b.completed?1:0,b.id)]);await audit(user,action,"sales",String(b.id),action,{before,after:b});
     }else throw new Error("Unknown sales action.");
     return Response.json({ok:true});
   }catch(error){

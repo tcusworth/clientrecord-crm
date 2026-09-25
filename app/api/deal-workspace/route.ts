@@ -5,6 +5,7 @@ import { defaultPipeline, type Stage } from "@/lib/sales-rules";
 import { calculateStakeholderCoverage, dealStakeholderRoles } from "@/lib/stakeholder-coverage";
 import { generateRecommendationCandidates, type RecommendationCandidate } from "@/lib/next-best-action";
 import { buildMeetingPreparationBrief } from "@/lib/meeting-intelligence";
+import { withoutShareToken } from "@/lib/proposals";
 
 type Row=Record<string,unknown>;
 const text=(value:unknown,max=4000)=>String(value??"").trim().slice(0,max);
@@ -106,7 +107,7 @@ async function prepareMeetingBrief(dealId:number,meetingKey:string,userEmail:str
     rows("SELECT * FROM deal_line_items WHERE deal_id=?",dealId),
     rows("SELECT * FROM deal_insights WHERE deal_id=? AND status!='Resolved' ORDER BY CASE severity WHEN 'High' THEN 1 WHEN 'Medium' THEN 2 ELSE 3 END,updated_at DESC LIMIT 30",dealId),
     rows("SELECT * FROM deal_reviews WHERE deal_id=? ORDER BY requested_at DESC LIMIT 20",dealId),
-    rows("SELECT * FROM deal_proposals WHERE deal_id=? ORDER BY created_at DESC LIMIT 20",dealId),
+    rows("SELECT * FROM deal_proposals WHERE deal_id=? ORDER BY created_at DESC LIMIT 20",dealId).then(list=>list.map(withoutShareToken)),
     rows("SELECT * FROM deal_meetings WHERE deal_id=? ORDER BY starts_at DESC LIMIT 20",dealId),
     meeting?rows("SELECT a.*,c.first_name||' '||c.last_name AS contact_name,c.title AS contact_title FROM deal_meeting_attendees a LEFT JOIN contacts c ON c.id=a.contact_id WHERE a.meeting_id=? ORDER BY a.id",String(meeting.id)):Promise.resolve([]),
   ]);
@@ -133,7 +134,7 @@ async function prepareMeetingBrief(dealId:number,meetingKey:string,userEmail:str
   const freshness=sourceGroups.map(source=>source.updatedAt).filter(value=>Number.isFinite(Date.parse(value))).sort().at(-1)||new Date().toISOString(),brief=buildMeetingPreparationBrief({deal,company,meeting,attendees,stakeholders,activities,meetings,notes,tasks,insights,reviews,proposals,relationshipHealth:relationship,coverage,nextAction:nextAction.current||null,dealHealth:health,freshnessTime:freshness}),artifactId=crypto.randomUUID(),generatedAt=new Date().toISOString(),confidence=brief.confidence==="High"?90:brief.confidence==="Medium"?70:40,sourcesWithHashes=await Promise.all(sourceGroups.map(async source=>({...source,contentHash:await sha256(JSON.stringify(source.value))})));
   await env.DB.batch([
     env.DB.prepare("UPDATE ai_artifacts SET superseded_by=? WHERE feature='meeting-prep' AND entity_type='meeting' AND entity_id=? AND superseded_by IS NULL").bind(artifactId,entityId),
-    env.DB.prepare("INSERT INTO ai_artifacts(id,run_id,feature,entity_type,entity_id,review_status,content_json,original_content_json,explanation,confidence,provider,model,prompt_version,rules_version,input_hash,generated_by,generated_at) VALUES (NULLIF(?,''),NULL,'meeting-prep','meeting',?,'Draft',?,?,?,?, 'clientrecord','meeting-prep-rules-v1',1,'meeting-prep-v1',?,?,?)").bind(artifactId,entityId,JSON.stringify(brief),JSON.stringify(brief),"Source-backed deterministic meeting preparation; no external model call was used.",confidence,inputHash,userEmail,generatedAt),
+    env.DB.prepare("INSERT INTO ai_artifacts(id,run_id,feature,entity_type,entity_id,review_status,content_json,original_content_json,explanation,confidence,provider,model,prompt_version,rules_version,input_hash,generated_by,generated_at) VALUES (NULLIF(?,''),NULL,'meeting-prep','meeting',?,'Draft',?,?,?,?, 'clientrecord','meeting-prep-rules-v1',1,'meeting-prep-v1',?,?,?)").bind(artifactId,entityId,JSON.stringify(brief),JSON.stringify(brief),"Rules-based deterministic meeting preparation; no external model call was used.",confidence,inputHash,userEmail,generatedAt),
     ...sourcesWithHashes.map(source=>env.DB.prepare("INSERT INTO ai_artifact_sources(artifact_id,source_type,source_id,source_updated_at,content_hash,excerpt) VALUES (?,?,?,?,?,?)").bind(artifactId,source.type,source.id.slice(0,1000),source.updatedAt||null,source.contentHash,source.excerpt.slice(0,1000))),
   ]);
   return {artifact:meetingArtifact(await one("SELECT a.*,(SELECT count(*) FROM ai_artifact_sources s WHERE s.artifact_id=a.id) AS source_count FROM ai_artifacts a WHERE a.id=?",artifactId)),cached:false};
@@ -141,6 +142,7 @@ async function prepareMeetingBrief(dealId:number,meetingKey:string,userEmail:str
 
 export async function GET(request:Request){
   const user=await crmUser(request);if(!user)return Response.json({error:"Sign in is required."},{status:401});
+  if(!can(user,"records.view"))return Response.json({error:"View access is required."},{status:403});
   try{
     const url=new URL(request.url);
     if(url.searchParams.get("quality")==="1"){
@@ -165,7 +167,7 @@ export async function GET(request:Request){
       rows("SELECT *,quantity*unit_price*(100-discount_percent)/100 AS total FROM deal_line_items WHERE deal_id=? ORDER BY id",dealId),
       rows("SELECT * FROM deal_insights WHERE deal_id=? ORDER BY CASE severity WHEN 'High' THEN 1 WHEN 'Medium' THEN 2 ELSE 3 END,created_at DESC",dealId),
       rows("SELECT * FROM deal_reviews WHERE deal_id=? ORDER BY requested_at DESC",dealId),
-      rows("SELECT * FROM deal_proposals WHERE deal_id=? ORDER BY created_at DESC",dealId),
+      rows("SELECT * FROM deal_proposals WHERE deal_id=? ORDER BY created_at DESC",dealId).then(list=>list.map(withoutShareToken)),
       rows(`SELECT d.*,v.filename,v.content_type,v.size,v.uploaded_at,v.uploaded_by
         FROM client_documents d JOIN document_versions v ON v.document_id=d.id AND v.version=d.latest_version
         WHERE d.deal_id=? AND d.status='Active' AND (?=1 OR d.sensitive=0) ORDER BY d.updated_at DESC`,dealId,can(user,"documents.manage_sensitive")?1:0),
@@ -253,11 +255,13 @@ export async function POST(request:Request){
     }else if(action==="resolveInsight"){
       const insightId=id(body.id);await env.DB.prepare("UPDATE deal_insights SET status=?,updated_at=? WHERE id=? AND deal_id=?").bind(text(body.status,30)||"Resolved",now,insightId,dealId).run();await audit(user,action,"deal_insight",insightId,"Updated deal insight status",{dealId,status:body.status});
     }else if(action==="requestReview"){
-      const result=await env.DB.prepare("INSERT INTO deal_reviews(deal_id,review_type,status,approver,requested_by,comments,requested_at) VALUES (?,?,'Requested',?,?,?,?)").bind(dealId,text(body.reviewType,100)||"Deal review",text(body.approver,200)||user.email,user.email,text(body.comments,2000),now).run();await audit(user,action,"deal_review",result.meta.last_row_id,"Requested deal approval",{dealId,approver:body.approver});
+      const approver=text(body.approver,200).toLowerCase();if(!approver)throw new Error("Choose an approver.");if(approver===user.email.toLowerCase())throw new Error("Choose an approver other than yourself.");
+      const result=await env.DB.prepare("INSERT INTO deal_reviews(deal_id,review_type,status,approver,requested_by,comments,requested_at) VALUES (?,?,'Requested',?,?,?,?)").bind(dealId,text(body.reviewType,100)||"Deal review",approver,user.email,text(body.comments,2000),now).run();await audit(user,action,"deal_review",result.meta.last_row_id,"Requested deal approval",{dealId,approver:body.approver});
     }else if(action==="decideReview"){
-      const reviewId=id(body.id),status=text(body.status,20);if(!["Approved","Rejected"].includes(status))throw new Error("Choose approved or rejected.");await env.DB.prepare("UPDATE deal_reviews SET status=?,comments=?,decided_at=? WHERE id=? AND deal_id=?").bind(status,text(body.comments,2000),now,reviewId,dealId).run();await audit(user,action,"deal_review",reviewId,`${status} deal review`,{dealId,status});
+      const reviewId=id(body.id),status=text(body.status,20);if(!["Approved","Rejected"].includes(status))throw new Error("Choose approved or rejected.");const review=await one("SELECT approver,requested_by FROM deal_reviews WHERE id=? AND deal_id=?",reviewId,dealId);if(!review)throw new Error("Review not found.");if(user.role!=="owner"&&text(review.requested_by,200).toLowerCase()===user.email.toLowerCase())return Response.json({error:"You cannot decide a review you requested."},{status:403});if(!canAdmin(user.role)&&text(review.approver,200).toLowerCase()!==user.email.toLowerCase())return Response.json({error:"Only the named approver or an administrator can decide this review."},{status:403});await env.DB.prepare("UPDATE deal_reviews SET status=?,comments=?,decided_at=? WHERE id=? AND deal_id=?").bind(status,text(body.comments,2000),now,reviewId,dealId).run();await audit(user,action,"deal_review",reviewId,`${status} deal review`,{dealId,status});
     }else if(action==="saveProposal"){
-      const result=await env.DB.prepare("INSERT INTO deal_proposals(deal_id,title,amount,status,valid_until,document_id,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)").bind(dealId,text(body.title,240)||"Proposal",money(body.amount),text(body.status,30)||"Draft",text(body.validUntil,20)||null,text(body.documentId,80)||null,user.email,now,now).run();await audit(user,action,"deal_proposal",result.meta.last_row_id,"Added quote or proposal",{dealId,title:body.title,amount:body.amount});
+      const status=text(body.status,30)||"Draft";if(!["Draft","Sent","Opened","Accepted","Declined","Expired"].includes(status))throw new Error("Choose a valid proposal status.");if(status==="Accepted"&&!canAdmin(user.role))return Response.json({error:"Only an owner or admin can mark a proposal accepted."},{status:403});
+      const result=await env.DB.prepare("INSERT INTO deal_proposals(deal_id,title,amount,status,valid_until,document_id,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)").bind(dealId,text(body.title,240)||"Proposal",money(body.amount),status,text(body.validUntil,20)||null,text(body.documentId,80)||null,user.email,now,now).run();await audit(user,action,"deal_proposal",result.meta.last_row_id,"Added quote or proposal",{dealId,title:body.title,amount:body.amount});
     }else if(action==="recommendationDecision"){
       const recommendationId=text(body.id,80),decision=text(body.decision,20),record=await one("SELECT * FROM deal_recommendations WHERE id=? AND deal_id=? AND current_key='current'",recommendationId,dealId);if(!record)throw new Error("The active recommendation was not found.");if(!["Accept","Dismiss","Complete"].includes(decision))throw new Error("Choose accept, dismiss, or complete.");const note=text(body.note,1000),createTask=decision==="Accept"&&bool(body.createTask);
       if(createTask&&!record.task_id){await env.DB.batch([env.DB.prepare("INSERT INTO deal_tasks(deal_id,title,owner,due_date,created_at) VALUES (?,?,?,?,?)").bind(dealId,String(record.action),String(record.suggested_owner||user.email),String(record.suggested_due_date),now),env.DB.prepare("UPDATE deal_recommendations SET status='Accepted',task_id=last_insert_rowid(),accepted_at=COALESCE(accepted_at,?),decided_by=?,decision_note=?,updated_at=? WHERE id=? AND deal_id=?").bind(now,user.email,note,now,recommendationId,dealId)])}

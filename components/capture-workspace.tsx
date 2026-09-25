@@ -6,11 +6,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
+import type { ContactRef as Contact, DealRef as Deal, Row } from "@/lib/crm-types";
+import { text } from "@/lib/format";
 
-type Contact={id:number;firstName:string;lastName:string;email:string;company:string};
-type Deal={id:number;name:string;company:string};
-type Row=Record<string,unknown>;
-const text=(value:unknown)=>String(value??"");
 const notifyUndo=(token?:unknown,label="Change saved")=>window.dispatchEvent(new CustomEvent("crm:undoable",{detail:{token:text(token),label}}));
 
 export function ContactCapture({onSaved}:{onSaved:()=>Promise<void>|void}){

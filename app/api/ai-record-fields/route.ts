@@ -1,12 +1,6 @@
 import { env } from "cloudflare:workers";
-import {
-  assertAiRunAllowed,
-  beginAiRun,
-  completeAiRun,
-  failAiRun,
-  loadAiSettings,
-  providerConfigured,
-} from "@/lib/ai-governance";
+import { loadAiSettings, providerConfigured } from "@/lib/ai-governance";
+import { aiMode, runAiArtifact } from "@/lib/ai-runner";
 import {
   aiFieldDefinitions,
   aiRecordResponseSchema,
@@ -18,7 +12,8 @@ import {
   type AIRecordResult,
   type EvidenceSource,
 } from "@/lib/ai-record-fields";
-import { audit, can, crmUser, sha256, type CRMUser } from "@/lib/crm-auth";
+import { audit, can, crmUser, type CRMUser } from "@/lib/crm-auth";
+import { withoutShareToken } from "@/lib/proposals";
 
 type Row = Record<string, unknown>;
 const clean = (value: unknown, max = 4000) =>
@@ -458,7 +453,7 @@ async function context(type: AIEntityType, id: number) {
     rows(
       "SELECT * FROM deal_proposals WHERE deal_id=? ORDER BY updated_at DESC",
       id,
-    ),
+    ).then((list) => list.map(withoutShareToken)),
     rows(
       "SELECT * FROM deal_reviews WHERE deal_id=? ORDER BY requested_at DESC",
       id,
@@ -592,215 +587,76 @@ async function context(type: AIEntityType, id: number) {
   };
 }
 
-function outputText(response: Row) {
-  if (typeof response.output_text === "string") return response.output_text;
-  const output = Array.isArray(response.output) ? response.output : [];
-  return output
-    .flatMap((item) =>
-      Array.isArray((item as Row).content)
-        ? ((item as Row).content as Row[])
-        : [],
-    )
-    .map((item) => (item.type === "output_text" ? clean(item.text, 50000) : ""))
-    .join("");
-}
-async function modelResult(
-  input: string,
-  type: AIEntityType,
-  settings: Row,
-  prompt: Row | null,
-  sources: EvidenceSource[],
-) {
-  const key = clean(
-      (env as unknown as Record<string, unknown>).OPENAI_API_KEY,
-      1000,
-    ),
-    system =
-      clean(prompt?.system_prompt, 30000) ||
-      "Classify CRM record fields using only supplied ClientRecord evidence. Never invent facts. Cite sourceType and sourceId exactly as supplied. MEDDPICC Partial or Confirmed classifications require a citation to an activity, note, stakeholder, or meeting. Use Unknown when evidence is absent.";
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${key}`,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      model: String(settings.model),
-      input: [
-        { role: "system", content: system },
-        { role: "user", content: input },
-      ],
-      max_output_tokens: 3500,
-      text: {
-        format: {
-          type: "json_schema",
-          name: `clientrecord_${type}_record_fields`,
-          strict: true,
-          schema: aiRecordResponseSchema(type),
-        },
-      },
-    }),
-  });
-  const payload = (await response.json()) as Row;
-  if (!response.ok)
-    throw new Error(
-      clean((payload.error as Row | undefined)?.message, 1200) ||
-        `AI provider returned ${response.status}.`,
-    );
-  const text = outputText(payload);
-  if (!text) throw new Error("The AI provider returned no record fields.");
-  return normalizeAIRecordResult(JSON.parse(text), type, sources);
-}
-
 async function generate(
   type: AIEntityType,
   id: number,
   user: CRMUser,
   force: boolean,
 ) {
-  const settings = await loadAiSettings(),
-    bundle = await context(type, id),
-    prompt = await one(
-      "SELECT * FROM ai_prompt_versions WHERE feature=? AND status='Active' ORDER BY version DESC LIMIT 1",
-      promptFeature(type),
-    ),
-    maxChars = Number(settings.maxContextChars || 60000),
-    safeSources = bundle.sources.slice(0, 250),
-    input = JSON.stringify({
-      instruction:
-        "Classify the requested record fields from these CRM sources only.",
-      entityType: type,
-      record: bundle.record,
-      context: bundle.context,
-      sources: safeSources,
-    }).slice(0, maxChars),
-    providerMode = Boolean(settings.enabled) && providerConfigured(),
-    hashInput = JSON.stringify({
-      input,
-      promptVersion: Number(prompt?.version || 1),
-      model: providerMode ? settings.model : "record-fields-rules-v1",
-    }),
-    inputHash = await sha256(hashInput);
-  if (!force) {
-    const cached = await one(
-      "SELECT a.*,(SELECT count(*) FROM ai_artifact_sources s WHERE s.artifact_id=a.id) AS source_count FROM ai_artifacts a WHERE a.feature=? AND a.entity_type=? AND a.entity_id=? AND a.input_hash=? AND a.review_status!='Rejected' AND a.superseded_by IS NULL ORDER BY a.generated_at DESC LIMIT 1",
-      feature(type),
-      type,
-      String(id),
-      inputHash,
-    );
-    if (cached)
-      return {
-        artifact: artifact(cached),
-        cached: true,
-        mode:
-          String(cached.provider) === "openai"
-            ? "Model-backed"
-            : "Source-backed",
-      };
-  }
-  let result: AIRecordResult,
-    run: null | { id: string; startedAt: number } = null,
-    provider = "clientrecord",
-    model = "record-fields-rules-v1";
-  if (providerMode) {
-    const allowed = await assertAiRunAllowed(user);
-    provider = String(allowed.provider);
-    model = String(allowed.model);
-    run = await beginAiRun({
-      feature: feature(type),
-      entityType: type,
-      entityId: id,
-      requestedBy: user.email,
-      provider,
-      model,
-      promptVersion: Number(prompt?.version || 1),
-      sourceCount: safeSources.length,
-      input: hashInput,
-    });
-    try {
-      result = await modelResult(input, type, allowed, prompt, safeSources);
-      await completeAiRun(run, JSON.stringify(result));
-    } catch (error) {
-      await failAiRun(run, error);
-      throw error;
-    }
-  } else
-    result = buildDeterministicAIRecordResult({
-      entityType: type,
-      record: bundle.record,
-      sources: safeSources,
-      context: bundle.context,
-    });
-  const artifactId = crypto.randomUUID(),
-    generatedAt = new Date().toISOString(),
-    hashed = await Promise.all(
-      safeSources.map(async (item) => ({
-        ...item,
-        hash: await sha256(item.content),
-      })),
-    );
-  await env.DB.batch([
-    env.DB.prepare(
-      "UPDATE ai_artifacts SET superseded_by=? WHERE feature=? AND entity_type=? AND entity_id=? AND superseded_by IS NULL",
-    ).bind(artifactId, feature(type), type, String(id)),
-    env.DB.prepare(
-      "INSERT INTO ai_artifacts(id,run_id,feature,entity_type,entity_id,review_status,content_json,original_content_json,explanation,confidence,provider,model,prompt_version,rules_version,input_hash,generated_by,generated_at) VALUES (?,?,?,?,?,'Draft',?,?,?,?,?,?,?,?,?,?,?)",
-    ).bind(
-      artifactId,
-      run?.id || null,
-      feature(type),
-      type,
-      String(id),
-      JSON.stringify(result),
-      JSON.stringify(result),
-      result.explanation,
-      confidenceNumber(result.confidence),
-      provider,
-      model,
-      Number(prompt?.version || 1),
-      "record-fields-v1",
-      inputHash,
-      user.email,
-      generatedAt,
-    ),
-    ...hashed.map((item) =>
-      env.DB.prepare(
-        "INSERT INTO ai_artifact_sources(artifact_id,source_type,source_id,source_updated_at,content_hash,excerpt) VALUES (?,?,?,?,?,?)",
-      ).bind(
-        artifactId,
-        item.sourceType,
-        item.sourceId.slice(0, 1000),
-        item.updatedAt || null,
-        item.hash,
-        item.excerpt.slice(0, 1000),
-      ),
-    ),
-  ]);
-  await audit(
+  const bundle = await context(type, id),
+    safeSources = bundle.sources.slice(0, 250);
+  const result = await runAiArtifact<AIRecordResult>({
+    feature: feature(type),
+    promptFeature: promptFeature(type),
+    entityType: type,
+    entityId: String(id),
     user,
-    "ai.record_fields.generate",
-    "ai_artifact",
-    artifactId,
-    `Generated reviewable ${type} record fields`,
-    {
+    force,
+    currentOnly: true,
+    instruction:
+      "Classify the requested record fields from these CRM sources only.",
+    data: {
       entityType: type,
-      entityId: id,
-      provider,
-      model,
-      promptVersion: Number(prompt?.version || 1),
-      sourceCount: safeSources.length,
+      record: bundle.record,
+      context: bundle.context,
+      sources: safeSources,
     },
-  );
+    rulesModel: "record-fields-rules-v1",
+    rulesVersion: "record-fields-v1",
+    sources: safeSources.map((item) => ({
+      type: item.sourceType,
+      id: item.sourceId,
+      updatedAt: item.updatedAt,
+      excerpt: item.excerpt,
+      content: item.content,
+    })),
+    model: {
+      schema: aiRecordResponseSchema(type),
+      schemaName: `clientrecord_${type}_record_fields`,
+      maxOutputTokens: 3500,
+      normalize: (value) => normalizeAIRecordResult(value, type, safeSources),
+      emptyMessage: "The AI provider returned no record fields.",
+      system:
+        "Classify CRM record fields using only supplied ClientRecord evidence. Never invent facts. Cite sourceType and sourceId exactly as supplied. MEDDPICC Partial or Confirmed classifications require a citation to an activity, note, stakeholder, or meeting. Use Unknown when evidence is absent.",
+    },
+    rules: () =>
+      buildDeterministicAIRecordResult({
+        entityType: type,
+        record: bundle.record,
+        sources: safeSources,
+        context: bundle.context,
+      }),
+  });
+  if (!result.cached)
+    await audit(
+      user,
+      "ai.record_fields.generate",
+      "ai_artifact",
+      result.row.id,
+      `Generated reviewable ${type} record fields`,
+      {
+        entityType: type,
+        entityId: id,
+        provider: result.provider,
+        model: result.model,
+        promptVersion: result.promptVersion,
+        sourceCount: safeSources.length,
+      },
+    );
   return {
-    artifact: artifact(
-      await one(
-        "SELECT a.*,(SELECT count(*) FROM ai_artifact_sources s WHERE s.artifact_id=a.id) AS source_count FROM ai_artifacts a WHERE a.id=?",
-        artifactId,
-      ),
-    ),
-    cached: false,
-    mode: provider === "openai" ? "Model-backed" : "Source-backed",
+    artifact: artifact(result.row),
+    cached: result.cached,
+    mode: aiMode(result.row.provider),
   };
 }
 
@@ -923,7 +779,12 @@ export async function POST(request: Request) {
       return Response.json(await generate(type, id, user, Boolean(body.force)));
     }
     if (action === "review") {
-      const error = denied(user, "ai.review");
+      // Accepting applies values to the record, so it also needs records.edit.
+      const error =
+        denied(user, "ai.review") ||
+        (clean(body.status, 20) === "Accepted"
+          ? denied(user, "records.edit")
+          : null);
       if (error) return error;
       const artifactId = clean(body.artifactId, 120),
         status = clean(body.status, 20);

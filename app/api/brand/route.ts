@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { audit, can, crmUser } from "@/lib/crm-auth";
 import { fromEmail, resend, sendingIdentity } from "@/lib/resend";
+import { escapeHtml } from "@/lib/email-templates";
 
 const clean = (value: unknown) => typeof value === "string" ? value.trim() : "";
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -53,8 +54,8 @@ export async function POST(request: Request) {
     const to = clean(body.to).toLowerCase(); if (!emailPattern.test(to)) return Response.json({ error: "Enter a valid test email address." }, { status: 400 });
     const settings = await sendingIdentity();
     if (!settings.fromEmail || !settings.businessName || !settings.physicalAddress) return Response.json({ error: "Save complete Brand & Sending Settings before sending a test." }, { status: 400 });
-    const logo = settings.logoUrl ? `<img src="${settings.logoUrl.replaceAll('"', '&quot;')}" alt="${settings.businessName.replaceAll('"', '&quot;')}" style="display:block;max-width:180px;max-height:72px;margin:0 0 24px">` : "";
-    const html = `<div style="background:#f3f5f8;padding:32px"><div style="max-width:600px;margin:auto;background:#fff;border-radius:14px;padding:36px;font:16px/1.6 Arial,sans-serif;color:#111b31">${logo}<h1 style="margin:0 0 12px">Your sending identity is ready</h1><p>This test was sent from <strong>${fromEmail(settings)}</strong>${settings.replyToEmail ? ` with replies directed to <strong>${settings.replyToEmail}</strong>` : ""}.</p><p style="margin-top:28px;font-size:12px;color:#667085">${settings.businessName}<br>${settings.physicalAddress.replaceAll("\n", "<br>")}</p></div></div>`;
+    const logo = settings.logoUrl ? `<img src="${escapeHtml(settings.logoUrl)}" alt="${escapeHtml(settings.businessName)}" style="display:block;max-width:180px;max-height:72px;margin:0 0 24px">` : "";
+    const html = `<div style="background:#f3f5f8;padding:32px"><div style="max-width:600px;margin:auto;background:#fff;border-radius:14px;padding:36px;font:16px/1.6 Arial,sans-serif;color:#111b31">${logo}<h1 style="margin:0 0 12px">Your sending identity is ready</h1><p>This test was sent from <strong>${escapeHtml(fromEmail(settings))}</strong>${settings.replyToEmail ? ` with replies directed to <strong>${escapeHtml(settings.replyToEmail)}</strong>` : ""}.</p><p style="margin-top:28px;font-size:12px;color:#667085">${escapeHtml(settings.businessName)}<br>${escapeHtml(settings.physicalAddress).replaceAll("\n", "<br>")}</p></div></div>`;
     const result = await resend("/emails", { method: "POST", body: JSON.stringify({ from: fromEmail(settings), to: [to], reply_to: settings.replyToEmail || undefined, subject: `[TEST] ${settings.businessName} sending identity`, html }) });
     await audit(auth.user, "brand.test", "brand_settings", 1, `Sent a brand test email to ${to}`);
     return Response.json({ status: "sent", id: result.id });

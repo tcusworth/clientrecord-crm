@@ -3,6 +3,7 @@
 import { AlertCircle, Check, ChevronLeft, ChevronRight, Columns3, List, PanelRightClose, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 
 export type WorkspaceMode="table"|"board";
 export type WorkspaceDensity="comfortable"|"compact";
@@ -23,3 +24,6 @@ export function AIEvidence({confidence,evidence,changes,onAccept,onReject,onNoUp
 export function WorkspaceEmpty({title,detail,action}:{title:string;detail:string;action?:React.ReactNode}){return <div className="grid min-h-56 place-items-center p-8 text-center"><div><div className="mx-auto grid h-10 w-10 place-items-center rounded-lg bg-slate-100 text-slate-400"><List size={18}/></div><strong className="mt-3 block text-sm">{title}</strong><p className="mx-auto mt-1 max-w-md text-sm text-slate-500">{detail}</p>{action&&<div className="mt-4">{action}</div>}</div></div>}
 export function WorkspaceError({message,retry}:{message:string;retry:()=>void}){return <div className="flex items-center gap-3 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800"><AlertCircle size={18}/><span className="flex-1">{message} No unsaved record changes were committed.</span><Button size="sm" variant="outline" onClick={retry}>Retry</Button></div>}
 export function Pagination({page,pages,onPage}:{page:number;pages:number;onPage:(page:number)=>void}){return <div className="flex items-center justify-between border-t px-4 py-3 text-xs text-slate-500"><span>Page {page} of {Math.max(1,pages)}</span><div className="flex gap-1"><Button size="icon" variant="ghost" disabled={page<=1} onClick={()=>onPage(page-1)}><ChevronLeft size={16}/></Button><Button size="icon" variant="ghost" disabled={page>=pages} onClick={()=>onPage(page+1)}><ChevronRight size={16}/></Button></div></div>}
+export function Panel({children,className="",rounded="lg"}:{children:React.ReactNode;className?:string;rounded?:"lg"|"2xl"}){return <section className={`${rounded==="2xl"?"rounded-2xl":"rounded-lg"} border bg-white shadow-[0_1px_2px_rgba(15,23,42,.03)] ${className}`}>{children}</section>}
+export function Heading({eyebrow,title,detail,action}:{eyebrow:string;title:string;detail?:string;action?:React.ReactNode}){return <div className="mb-6 flex flex-wrap items-end justify-between gap-4"><div><div className="mb-1 text-sm font-semibold text-[#3968ff]">{eyebrow}</div><h1 className="text-2xl font-semibold tracking-[-.025em] md:text-[30px]">{title}</h1>{detail&&<p className="mt-1 max-w-3xl text-sm text-slate-500">{detail}</p>}</div>{action}</div>}
+export function Field({label,className="",...props}:{label:string;className?:string}&React.InputHTMLAttributes<HTMLInputElement>){return <label className={`grid gap-1 text-sm font-medium ${className}`}>{label}<Input {...props}/></label>}

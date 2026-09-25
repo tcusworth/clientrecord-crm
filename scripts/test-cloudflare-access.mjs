@@ -1,15 +1,8 @@
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import vm from "node:vm";
 import { generateKeyPairSync, sign } from "node:crypto";
-import ts from "typescript";
+import { createModuleLoader } from "./test-helpers.mjs";
 
-const source = ts.transpileModule(fs.readFileSync("lib/cloudflare-access.ts", "utf8"), {
-  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
-}).outputText;
-const module = { exports: {} };
-vm.runInThisContext(`(function(module,exports){${source}\n})`, { filename: "lib/cloudflare-access.ts" })(module,module.exports);
-const { verifiedCloudflareAccessIdentity } = module.exports;
+const { verifiedCloudflareAccessIdentity } = createModuleLoader()("lib/cloudflare-access.ts");
 
 const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const jwk = publicKey.export({ format: "jwk" });

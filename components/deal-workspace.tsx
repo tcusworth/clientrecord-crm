@@ -7,12 +7,12 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { AIEvidence, ContextBlock, Pagination, RecordDrawer, ViewBar, WorkspaceEmpty, WorkspaceError, type WorkspaceDensity, type WorkspaceMode } from "@/components/workspace-primitives";
+import type { SalesDeal as Deal } from "@/lib/crm-types";
+import { money } from "@/lib/format";
 
 type Stage={key:string;name:string;probability:number;kind:"Open"|"Won"|"Lost"};
 type Pipeline={id:string;name:string;stages:Stage[]};
-type Deal={id:number;name:string;company:string;company_id:number|null;contact_id:number|null;stage:string;stage_key:string|null;pipeline_key:string;owner:string;value:number;probability:number;next_step:string;close_date:string;lead_source:string;campaign:string;partner:string;forecast_category:string;closed_reason:string;stage_entered_at:string;status:string};
 type Data={user:{email:string;role:string};deals:Deal[];pipelines:Pipeline[];tasks:Array<{id:number;deal_id:number;title:string;owner:string;due_date:string;completed:number}>;history:Array<{id:number;deal_id:number;from_stage:string;to_stage:string;actor:string;happened_at:string}>;companies:Array<{id:number;name:string}>;contacts:Array<{id:number;name:string;company:string}>};
-const money=(value:number)=>new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",maximumFractionDigits:0}).format(value/100);
 const today=()=>new Date().toISOString().slice(0,10);
 
 export function DealWorkspace(){

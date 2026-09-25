@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import { DatabaseSync } from "node:sqlite";
+import { createSqlite } from "./test-helpers.mjs";
 
-const db = new DatabaseSync(":memory:");
-db.exec("PRAGMA foreign_keys=ON");
-for (const file of fs.readdirSync("drizzle").filter(file => file.endsWith(".sql")).sort()) db.exec(fs.readFileSync(`drizzle/${file}`, "utf8"));
+const db = createSqlite();
 
 const now = new Date().toISOString();
 db.prepare("INSERT INTO custom_object_types(id,key,singular_name,plural_name,description,icon,title_field_key,status,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)").run("type-installation","installations","Installation","Installations","Customer equipment","boxes","name","Active","owner@example.com",now,now);
