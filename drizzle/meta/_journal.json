@@ -176,6 +176,13 @@
       "when": 1790202717546,
       "tag": "0024_wide_mach_iv",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "6",
+      "when": 1790355476713,
+      "tag": "0025_low_friction_capture",
+      "breakpoints": true
     }
   ]
 }
