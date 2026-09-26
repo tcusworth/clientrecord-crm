@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Panel } from "@/components/workspace-primitives";
+import { CustomerPortalLinks } from "@/components/customer-portal-links";
 import type { Row } from "@/lib/crm-types";
 import { money, text } from "@/lib/format";
 
@@ -14,7 +15,7 @@ type Data = { account: { email: string }; plans: Row[]; companies: Row[]; renewa
 const band = (score: number) => score >= 80 ? "Strong" : score >= 60 ? "Stable" : score >= 40 ? "Attention" : "At risk";
 const color = (value: string) => value === "Critical" || value === "At risk" ? "destructive" : value === "High" || value === "Attention" ? "secondary" : "default";
 
-export function CustomerSuccessWorkspace() {
+export function CustomerSuccessWorkspace({ canEdit }: { canEdit: boolean }) {
   const [data, setData] = useState<Data | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -48,6 +49,7 @@ export function CustomerSuccessWorkspace() {
     {data.alerts.length > 0 && <Panel rounded="2xl" className="mb-6 overflow-hidden"><div className="border-b p-5"><div className="flex items-center gap-2"><AlertTriangle size={18} className="text-amber-600"/><h2 className="font-semibold">Proactive risk alerts</h2></div><p className="mt-1 text-sm text-slate-500">Health below 40, high/critical churn risk, or renewals due within 90 days.</p></div>{data.alerts.map(alert => <div key={text(alert.id)} className="flex flex-wrap items-center justify-between gap-3 border-b p-4 last:border-0"><div><strong>{text(alert.companyName)}</strong><p className="mt-1 text-sm text-slate-600">Health {text(alert.healthScore)} · {text(alert.churnRisk)} churn risk · renewal {text(alert.renewalDate || "not set")}</p></div><Badge variant={color(text(alert.churnRisk)) as "default"}>{text(alert.churnRisk)} risk</Badge></div>)}</Panel>}
     <Panel rounded="2xl" className="overflow-hidden"><div className="border-b p-5"><div className="flex items-center gap-2"><ClipboardList size={18}/><h2 className="font-semibold">Account plans</h2></div><p className="mt-1 text-sm text-slate-500">Objectives, stakeholders, risks, and the next executive touchpoint stay visible here.</p></div>{data.plans.map(plan => <PlanRow key={text(plan.id)} plan={plan} busy={Boolean(busy)} edit={() => setEditing(plan)} renew={() => void run("createRenewalDeal", { id: plan.id }, "Renewal deal created")}/>) }{!data.plans.length && <div className="p-10 text-center text-sm text-slate-500">Create the first plan for an active customer to start tracking onboarding and renewal health.</div>}</Panel>
     <Panel rounded="2xl" className="mt-6 overflow-hidden"><div className="border-b p-5"><div className="flex items-center gap-2"><UsersRound size={18}/><h2 className="font-semibold">Renewal pipeline</h2></div></div>{data.renewalDeals.map(deal => <div key={text(deal.id)} className="flex flex-wrap items-center justify-between gap-4 border-b p-4 last:border-0"><div><strong>{text(deal.name)}</strong><p className="mt-1 text-sm text-slate-600">{text(deal.company)} · close {text(deal.closeDate || "—")}</p></div><div className="text-right"><Badge variant="secondary">{text(deal.stage)}</Badge><p className="mt-1 text-sm font-semibold">{money(deal.value)}</p></div></div>)}{!data.renewalDeals.length && <div className="p-8 text-center text-sm text-slate-500">Renewal deals created from account plans will appear here.</div>}</Panel>
+    <CustomerPortalLinks canEdit={canEdit}/>
     {(editing || creating) && <PlanDialog plan={editing || undefined} companies={creating ? availableCompanies : data.companies} account={data.account.email} busy={Boolean(busy)} close={() => { setEditing(null); setCreating(false); }} save={async form => { if (await run("savePlan", Object.fromEntries(form.entries()), "Customer plan saved")) { setEditing(null); setCreating(false); } }}/>} 
   </>;
 }

@@ -6,8 +6,9 @@ import { companyDetail, companyQuery, contactDetail, contactFilter, contactQuery
 
 function clean(value: unknown, fallback = "") { return typeof value === "string" ? value.trim() : fallback; }
 const LIMITS = { notes: 20000, subject: 500, html: 500000 } as const;
-// Every column referencing contacts(id); mergeContacts re-points them all (deal/account stakeholders are merged separately because of their unique keys).
-const CONTACT_REFERENCES = [["activities","contact_id"],["tasks","contact_id"],["companies","primary_contact_id"],["deals","contact_id"],["automation_enrollments","contact_id"],["sync_records","contact_id"],["client_documents","contact_id"],["deal_activities","contact_id"],["deal_meeting_attendees","contact_id"],["inbox_messages","contact_id"],["lead_intakes","contact_id"],["lead_intakes","duplicate_contact_id"],["customer_portal_access","contact_id"],["field_captures","contact_id"],["partner_contacts","contact_id"],["service_cases","contact_id"],["communication_review_items","contact_id"]] as const;
+// Every column referencing contacts(id): mergeContacts re-points them all (deal/account stakeholders are merged separately because of their unique keys);
+// deleteContact removes "delete" rows (NOT NULL links/owned rows) and detaches "detach" rows (history and independent records keep existing).
+const CONTACT_REFERENCES = [["activities","contact_id","delete"],["tasks","contact_id","delete"],["companies","primary_contact_id","detach"],["deals","contact_id","detach"],["automation_enrollments","contact_id","delete"],["sync_records","contact_id","detach"],["client_documents","contact_id","detach"],["deal_activities","contact_id","detach"],["deal_meeting_attendees","contact_id","detach"],["inbox_messages","contact_id","detach"],["lead_intakes","contact_id","detach"],["lead_intakes","duplicate_contact_id","detach"],["customer_portal_access","contact_id","delete"],["field_captures","contact_id","detach"],["partner_contacts","contact_id","detach"],["service_cases","contact_id","detach"],["communication_review_items","contact_id","detach"]] as const;
 function overLimit(body: Record<string, unknown>, fields: Array<[string, keyof typeof LIMITS]>) { const hit = fields.find(([key, limit]) => clean(body[key]).length > LIMITS[limit]); return hit ? Response.json({ error: `${hit[0]} is limited to ${LIMITS[hit[1]].toLocaleString("en-US")} characters.` }, { status: 400 }) : null; }
 async function customFieldChanges(body: Record<string, unknown>, entityType: "contact" | "company", entityId: number) {
   const definitions = (await env.DB.prepare("SELECT id,field_type AS fieldType,options FROM custom_field_definitions WHERE entity_type=?").bind(entityType).all<Record<string, unknown>>()).results;
@@ -126,20 +127,16 @@ export async function POST(request: Request) {
     if(body.action==="deleteContact"){
       const id=Number(body.id),contact=await env.DB.prepare("SELECT * FROM contacts WHERE id=?").bind(id).first<Record<string,unknown>>();
       if(!id||!contact)return Response.json({error:"Contact not found."},{status:404});
+      // Detach everything first (including rows pointing at the contact's tasks), then delete link rows, then the contact.
       await env.DB.batch([
-        env.DB.prepare("DELETE FROM activities WHERE contact_id=?").bind(id),
-        env.DB.prepare("DELETE FROM tasks WHERE contact_id=?").bind(id),
-        env.DB.prepare("DELETE FROM automation_enrollments WHERE contact_id=?").bind(id),
-        env.DB.prepare("UPDATE sync_records SET contact_id=NULL WHERE contact_id=?").bind(id),
-        env.DB.prepare("UPDATE companies SET primary_contact_id=NULL WHERE primary_contact_id=?").bind(id),
-        env.DB.prepare("UPDATE deals SET contact_id=NULL WHERE contact_id=?").bind(id),
-        env.DB.prepare("UPDATE deal_activities SET contact_id=NULL,updated_at=datetime('now') WHERE contact_id=?").bind(id),
-        env.DB.prepare("UPDATE deal_meeting_attendees SET contact_id=NULL WHERE contact_id=?").bind(id),
-        env.DB.prepare("UPDATE client_documents SET contact_id=NULL,updated_at=datetime('now') WHERE contact_id=?").bind(id),
+        ...["inbox_messages","lead_intakes"].map(table=>env.DB.prepare(`UPDATE ${table} SET task_id=NULL WHERE task_id IN (SELECT id FROM tasks WHERE contact_id=?)`).bind(id)),
+        ...CONTACT_REFERENCES.filter(([,,onDelete])=>onDelete==="detach").map(([table,column])=>env.DB.prepare(`UPDATE ${table} SET ${column}=NULL WHERE ${column}=?`).bind(id)),
+        ...CONTACT_REFERENCES.filter(([,,onDelete])=>onDelete==="delete").map(([table,column])=>env.DB.prepare(`DELETE FROM ${table} WHERE ${column}=?`).bind(id)),
         env.DB.prepare("DELETE FROM deal_stakeholders WHERE contact_id=?").bind(id),
         env.DB.prepare("DELETE FROM account_stakeholders WHERE contact_id=?").bind(id),
         env.DB.prepare("DELETE FROM custom_field_values WHERE entity_type='contact' AND entity_id=?").bind(id),
-        env.DB.prepare("DELETE FROM ai_record_fields WHERE entity_type='contact' AND entity_id=?").bind(id),
+        env.DB.prepare("DELETE FROM ai_record_fields WHERE entity_type='contact' AND entity_id=?").bind(String(id)),
+        env.DB.prepare("DELETE FROM custom_relationships WHERE (from_entity_type='contact' AND from_entity_id=?) OR (to_entity_type='contact' AND to_entity_id=?)").bind(String(id),String(id)),
         env.DB.prepare("DELETE FROM contacts WHERE id=?").bind(id),
       ]);
       return Response.json({status:"deleted"});
