@@ -1,7 +1,7 @@
 import { verifiedCloudflareAccessIdentity } from "@/lib/cloudflare-access";
 
 export const CONSENT_TTL_SECONDS = 600;
-const COOKIE = "cr_consent";
+const COOKIE = "__Host-cr_consent";
 export const escapeHtml = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]!));
 
 // Who is signing in. Production: a verified Cloudflare Access JWT only. Local dev: DEV_AUTHORIZE_AS, honoured only on localhost.
@@ -14,7 +14,7 @@ export async function identify(request: Request, env: { CF_ACCESS_TEAM_DOMAIN?: 
 
 // The connections page uses its own cookie name so opening it never clobbers an in-flight consent.
 export const CONSENT_COOKIE = COOKIE;
-export const CONNECTIONS_COOKIE = "cr_connections";
+export const CONNECTIONS_COOKIE = "__Host-cr_connections";
 export const consentCookie = (id: string, name = COOKIE) => `${name}=${id}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${CONSENT_TTL_SECONDS}`;
 export const clearConsentCookie = (name = COOKIE) => `${name}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0`;
 export function readCookie(request: Request, name: string): string | null {

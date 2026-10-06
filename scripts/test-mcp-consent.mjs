@@ -12,8 +12,11 @@ assert.ok(page.includes('name="consentId" value="abc123"'));
 assert.ok(/cannot delete, merge|can't delete/.test(page), "powers explained");
 const cookie = c.consentCookie("abc123");
 assert.match(cookie, /HttpOnly/); assert.match(cookie, /Secure/); assert.match(cookie, /SameSite=Strict/); assert.match(cookie, /Max-Age=600/);
-assert.equal(c.readCookie(new Request("https://mcp.example/authorize", { headers: { cookie: "a=1; cr_consent=abc123; b=2" } }), "cr_consent"), "abc123");
-assert.equal(c.readCookie(new Request("https://mcp.example/authorize"), "cr_consent"), null);
+// __Host- prefix: browser enforces Secure, Path=/ and no Domain, so a sibling subdomain can't plant the cookie
+assert.equal(c.CONSENT_COOKIE, "__Host-cr_consent"); assert.equal(c.CONNECTIONS_COOKIE, "__Host-cr_connections");
+for (const set of [cookie, c.consentCookie("t", c.CONNECTIONS_COOKIE), c.clearConsentCookie(), c.clearConsentCookie(c.CONNECTIONS_COOKIE)]) { assert.match(set, /^__Host-cr_(consent|connections)=/); assert.match(set, /; Path=\/;/); assert.match(set, /Secure/); assert.doesNotMatch(set, /Domain=/i); }
+assert.equal(c.readCookie(new Request("https://mcp.example/authorize", { headers: { cookie: "a=1; cr_consent=forged; __Host-cr_consent=abc123; b=2" } }), c.CONSENT_COOKIE), "abc123");
+assert.equal(c.readCookie(new Request("https://mcp.example/authorize"), c.CONSENT_COOKIE), null);
 
 // identity: dev bypass only on localhost; otherwise requires a verified Access JWT
 assert.deepEqual(await c.identify(new Request("http://127.0.0.1:8788/authorize"), { DEV_AUTHORIZE_AS: "Owner@Example.com" }), { email: "owner@example.com" });
