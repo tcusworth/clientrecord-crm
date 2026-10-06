@@ -102,7 +102,7 @@ export async function callTool(ctx: ToolContext, name: string, args: unknown): P
   if (!can(ctx.user, tool.permission)) return { ok: false, error: tool.permission === "records.edit" ? "You don't have permission to change CRM records." : "You don't have permission to view CRM records.", status: 403 };
   if (args === undefined || args === null) args = {};
   if (typeof args !== "object" || Array.isArray(args)) return { ok: false, error: "Tool arguments must be an object.", status: 400 };
-  const allowed = (tool.inputSchema.properties || {}) as Row, unknown = Object.keys(args).filter(k => !Object.hasOwn(allowed, k));
+  const allowed = (tool.inputSchema.properties || {}) as Row, unknown = Object.keys(args as Row).filter(k => !Object.hasOwn(allowed, k));
   if (unknown.length) return { ok: false, error: `Unknown argument${unknown.length > 1 ? "s" : ""} for ${name}: ${unknown.slice(0, 5).map(k => k.slice(0, 60)).join(", ")}.`, status: 400 };
   try { return { ok: true, result: sanitize(await tool.run(ctx, args as Row)) }; }
   catch (error) { if (error instanceof ServiceError) return { ok: false, error: error.message, status: error.status }; console.error("MCP tool failed", name, error); return { ok: false, error: "The CRM couldn't complete that request.", status: 500 }; }
