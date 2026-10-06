@@ -2,7 +2,9 @@ import { env } from "cloudflare:workers";
 import { fromEmail, resend, resendConfigured, sendingIdentity } from "@/lib/resend";
 import { audit, can, canAdmin, crmUser, displayName } from "@/lib/crm-auth";
 import { maybeRunDailyMaintenance } from "@/lib/operations";
-import { companyDetail, companyQuery, contactDetail, contactFilter, contactQuery, contactSummary, contactWhere, listCompanies, listContacts, reconcileCompanyNames, reconcileCompanyNamesStatements, recordMentions, searchRecords, segmentCounts, type SegmentRule } from "@/lib/crm-records";
+import { completeContactTask, createContact, createContactTask, logContactActivity, updateContact } from "@/lib/services/contacts";
+import { ServiceError } from "@/lib/services/errors";
+import { companyDetail, companyQuery, contactDetail, contactFilter, contactQuery, contactSummary, contactWhere, listCompanies, listContacts, reconcileCompanyNames, recordMentions, searchRecords, segmentCounts, type SegmentRule } from "@/lib/crm-records";
 
 function clean(value: unknown, fallback = "") { return typeof value === "string" ? value.trim() : fallback; }
 const LIMITS = { notes: 20000, subject: 500, html: 500000 } as const;
@@ -111,19 +113,8 @@ export async function POST(request: Request) {
     const deletes=body.action==="deleteContact"||body.action==="mergeContacts";if(!can(account,deletes?"records.delete":"records.edit")||(body.action==="mergeContacts"&&!can(account,"records.edit")))return Response.json({error:deletes?"Record-delete permission is required.":"Record-edit permission is required."},{status:403});
     const tooLong=overLimit(body,[["notes","notes"],["subject","subject"],["previewText","subject"],["html","html"],["textBody","html"]]);if(tooLong)return tooLong;
     await audit(account,String(body.action||"write"),"crm",body.id||body.contactId||body.email||null,`CRM action: ${String(body.action||"write")}`,body);
-    if (body.action === "createContact") {
-      const firstName=clean(body.firstName), lastName=clean(body.lastName), email=clean(body.email).toLowerCase(); if (!firstName || !lastName || !email) return Response.json({error:"Name and email are required."},{status:400});
-      const suppressed=await env.DB.prepare("SELECT reason FROM suppressions WHERE email=? AND removed_at IS NULL").bind(email).first<{reason:string}>();
-      const result = await env.DB.prepare("INSERT INTO contacts (first_name,last_name,email,company,title,phone,location,notes,lead_source,stage,tags,subscribed,suppression_reason,suppressed_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'),datetime('now'))").bind(firstName,lastName,email,clean(body.company),clean(body.title),clean(body.phone),clean(body.location),clean(body.notes),clean(body.leadSource,"Direct"),clean(body.stage,"Lead"),JSON.stringify(clean(body.tags).split(",").map(v=>v.trim()).filter(Boolean)),suppressed?0:1,suppressed?.reason||null,suppressed?new Date().toISOString():null).run(); await reconcileCompanyNames(env.DB,[body.company]); return Response.json({id:result.meta.last_row_id},{status:201});
-    }
-    if(body.action==="updateContact"){
-      const id=Number(body.id),email=clean(body.email).toLowerCase(),tags=clean(body.tags).split(",").map(v=>v.trim()).filter(Boolean),stage=clean(body.stage,"Lead");
-      if(!id||!email)return Response.json({error:"Contact and email are required."},{status:400});
-      const fieldChanges=await customFieldChanges(body,"contact",id);
-      await env.DB.batch([env.DB.prepare("UPDATE contacts SET first_name=?,last_name=?,email=?,company=?,title=?,phone=?,location=?,notes=?,lead_source=?,stage=?,tags=?,updated_at=datetime('now') WHERE id=?").bind(clean(body.firstName),clean(body.lastName),email,clean(body.company),clean(body.title),clean(body.phone),clean(body.location),clean(body.notes),clean(body.leadSource,"Direct"),stage,JSON.stringify(tags),id),...fieldChanges,...reconcileCompanyNamesStatements(env.DB,[body.company])]);
-      const matched=await env.DB.prepare("SELECT s.id,(SELECT delay_days FROM automation_steps WHERE sequence_id=s.id ORDER BY step_order LIMIT 1) AS delayDays FROM automation_sequences s WHERE s.active=1 AND s.trigger_type='Contact stage' AND lower(s.trigger_value)=lower(?)").bind(stage).all();for(const sequence of matched.results){const exists=await env.DB.prepare("SELECT id FROM automation_enrollments WHERE sequence_id=? AND contact_id=? AND status='Active'").bind(sequence.id,id).first();if(!exists)await env.DB.prepare("INSERT INTO automation_enrollments (sequence_id,contact_id,current_step,status,next_run_at,enrolled_at) VALUES (?,?,0,'Active',datetime('now',?),datetime('now'))").bind(sequence.id,id,`+${Math.max(0,Number(sequence.delayDays)||0)} days`).run();}
-      return Response.json({status:"updated"});
-    }
+    if (body.action === "createContact") { const { id } = await createContact(env.DB, { firstName: clean(body.firstName), lastName: clean(body.lastName), email: clean(body.email), company: clean(body.company), title: clean(body.title), phone: clean(body.phone), location: clean(body.location), notes: clean(body.notes), leadSource: clean(body.leadSource,"Direct"), stage: clean(body.stage,"Lead"), tags: clean(body.tags).split(",") }); return Response.json({ id }, { status: 201 }); }
+    if(body.action==="updateContact"){ const id=Number(body.id); await updateContact(env.DB, id, { firstName: clean(body.firstName), lastName: clean(body.lastName), email: clean(body.email), company: clean(body.company), title: clean(body.title), phone: clean(body.phone), location: clean(body.location), notes: clean(body.notes), leadSource: clean(body.leadSource,"Direct"), stage: clean(body.stage,"Lead"), tags: clean(body.tags).split(",") }, id&&clean(body.email) ? await customFieldChanges(body,"contact",id) : []); return Response.json({status:"updated"}); }
     if(body.action==="deleteContact"){
       const id=Number(body.id),contact=await env.DB.prepare("SELECT * FROM contacts WHERE id=?").bind(id).first<Record<string,unknown>>();
       if(!id||!contact)return Response.json({error:"Contact not found."},{status:404});
@@ -141,12 +132,8 @@ export async function POST(request: Request) {
       ]);
       return Response.json({status:"deleted"});
     }
-    if (body.action === "createActivity") {
-      const contactId=Number(body.contactId), note=clean(body.note), type=clean(body.type,"Note"), today=new Date().toISOString(); if (!contactId || !note) return Response.json({error:"Contact and note are required."},{status:400});
-      const statements=[env.DB.prepare("INSERT INTO activities (contact_id,type,note,happened_at) VALUES (?,?,?,?)").bind(contactId,type,note,today), env.DB.prepare("UPDATE contacts SET last_contact=? WHERE id=?").bind(today.slice(0,10),contactId)];
-      const next=clean(body.nextFollowUp); if(next){statements.push(env.DB.prepare("INSERT INTO tasks (contact_id,title,due_date,owner,status,completed) VALUES (?,?,?,?,'Open',0)").bind(contactId,"Follow up after "+type.toLowerCase(),next,clean(body.owner,await displayName(account))),env.DB.prepare("UPDATE contacts SET next_follow_up=? WHERE id=?").bind(next,contactId));} await env.DB.batch(statements); return Response.json({status:"created"},{status:201});
-    }
-    if(body.action==="createTask"){const contactId=Number(body.contactId),title=clean(body.title),dueDate=clean(body.dueDate),owner=clean(body.owner,await displayName(account));if(!contactId||!title||!dueDate)return Response.json({error:"Contact, task and due date are required."},{status:400});await env.DB.batch([env.DB.prepare("INSERT INTO tasks (contact_id,title,due_date,owner,status,completed) VALUES (?,?,?,?,'Open',0)").bind(contactId,title,dueDate,owner),env.DB.prepare("UPDATE contacts SET next_follow_up=? WHERE id=?").bind(dueDate,contactId)]);return Response.json({status:"created"},{status:201});}
+    if (body.action === "createActivity") { await logContactActivity(env.DB, { contactId: Number(body.contactId), type: clean(body.type,"Note"), note: clean(body.note), nextFollowUp: clean(body.nextFollowUp), owner: clean(body.owner, await displayName(account)) }); return Response.json({status:"created"},{status:201}); }
+    if(body.action==="createTask"){ await createContactTask(env.DB, { contactId: Number(body.contactId), title: clean(body.title), dueDate: clean(body.dueDate), owner: clean(body.owner, await displayName(account)) }); return Response.json({status:"created"},{status:201}); }
     if(body.action==="bulkUpdateContacts"){
       // Either explicit ids (up to 500) or `filter` = the contact list filter, applied server-side to every matching contact.
       const ids=Array.isArray(body.ids)?[...new Set(body.ids.map(Number).filter(id=>Number.isInteger(id)&&id>0))]:[],filter=body.filter&&typeof body.filter==="object"&&!Array.isArray(body.filter)?contactFilter(body.filter as Record<string,unknown>):null,stage=clean(body.stage),addTag=clean(body.addTag);
@@ -197,7 +184,7 @@ export async function POST(request: Request) {
     if(body.action==="duplicateCampaign"){
       const source=await campaignRow(Number(body.id));if(!source)return Response.json({error:"Campaign not found."},{status:404});const result=await env.DB.prepare("INSERT INTO campaigns (name,subject,preview_text,html,text_body,status,audience,recipient_count,created_at,updated_at) VALUES (?,?,?,?,?,'Draft',?,0,date('now'),datetime('now'))").bind(`${source.name} — Copy`,source.subject,source.previewText,source.html,source.textBody,source.audience).run();return Response.json({id:result.meta.last_row_id},{status:201});
     }
-    if (body.action === "completeTask") { await env.DB.prepare("UPDATE tasks SET completed=1,status='Completed' WHERE id=?").bind(Number(body.id)).run(); return Response.json({status:"completed"}); }
+    if (body.action === "completeTask") { await completeContactTask(env.DB, Number(body.id)); return Response.json({status:"completed"}); }
     if(body.action==="saveCompany"){const name=clean(body.name),stage=clean(body.stage,"Prospect"),notes=clean(body.notes),primary=Number(body.primaryContactId)||null;if(!name)return Response.json({error:"Company name is required."},{status:400});await env.DB.prepare("INSERT INTO companies (name,stage,notes,primary_contact_id,updated_at) VALUES (?,?,?,?,datetime('now')) ON CONFLICT(name) DO UPDATE SET stage=excluded.stage,notes=excluded.notes,primary_contact_id=excluded.primary_contact_id,updated_at=datetime('now')").bind(name,stage,notes,primary).run();return Response.json({status:"saved"});}
     if (body.action === "saveCampaign") {
       const id=Number(body.id), name=clean(body.name), subject=clean(body.subject), audience=clean(body.audience,"All subscribed contacts"), previewText=clean(body.previewText), html=clean(body.html), textBody=clean(body.textBody); if(!name||!subject||!html)return Response.json({error:"Campaign name, subject, and message are required."},{status:400});
@@ -220,5 +207,5 @@ export async function POST(request: Request) {
       await env.DB.prepare("UPDATE campaigns SET resend_broadcast_id=?,status=?,scheduled_at=?,sent_at=?,updated_at=datetime('now') WHERE id=?").bind(String(result.id||""),scheduledAt?"Scheduled":"Sending",scheduledAt||null,scheduledAt?null:new Date().toISOString(),id).run(); return Response.json({id:result.id,status:scheduledAt?"Scheduled":"Sending"});
     }
     return Response.json({error:"Unknown action."},{status:400});
-  } catch (error) { const raw=error instanceof Error?error.message:"The CRM could not save that change."; const message=raw.includes("UNIQUE")?"A contact with that email already exists.":raw; return Response.json({error:message},{status:500}); }
+  } catch (error) { if (error instanceof ServiceError) return Response.json({ error: error.message }, { status: error.status }); const raw=error instanceof Error?error.message:"The CRM could not save that change."; const message=raw.includes("UNIQUE")?"A contact with that email already exists.":raw; return Response.json({error:message},{status:500}); }
 }
