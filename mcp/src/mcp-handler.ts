@@ -10,6 +10,8 @@ const jsonRpcError = (status: number, message: string) => Response.json({ jsonrp
 
 // Stateless: a new MCP server per request, bound to the person's CURRENT permissions (re-resolved every time).
 export async function handleMcp(request: Request, env: Cloudflare.Env, props: { email: string; clientName?: string }): Promise<Response> {
+  // Stateless: no SSE stream (GET) or session (DELETE). Refuse before any D1 work; the SDK's GET handler would otherwise hold an endless stream open.
+  if (request.method !== "POST") return Response.json({ jsonrpc: "2.0", error: { code: -32000, message: "Method not allowed." }, id: null }, { status: 405, headers: { allow: "POST" } });
   const user = await userByEmail(props.email, `mcp:${props.email}`);
   if (!user) return jsonRpcError(403, "Your CRM access has been removed or disabled.");
   const limit = await rateLimitKey(`mcp:${user.email}`, CALLS_PER_MINUTE);
