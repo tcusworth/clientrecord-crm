@@ -1,7 +1,8 @@
 import { env } from "cloudflare:workers";
 import { audit, can, canAdmin, crmUser } from "@/lib/crm-auth";
-import { defaultPipeline, relationshipRoles, signalPoints, validateStages, type Pipeline } from "@/lib/sales-rules";
+import { relationshipRoles, signalPoints, validateStages } from "@/lib/sales-rules";
 import { recalculateCompany, saveCompany } from "@/lib/services/companies";
+import { createDealTask, pipelines, saveDeal, setDealTaskCompleted } from "@/lib/services/deals";
 import { ServiceError } from "@/lib/services/errors";
 import { chooseCompanyDomain, enrichCompanyApollo, enrichCompanyWebsite, normalizedCompanyDomain } from "@/lib/company-enrichment";
 
@@ -11,11 +12,6 @@ const str=(v:unknown)=>typeof v==="string"?v.trim():"";
 const requireText=(v:unknown,label:string)=>{const s=str(v);if(!s||s.length>4000)throw new Error(label+" is required (maximum 4,000 characters).");return s;};
 const number=(v:unknown,min=0,max=100)=>{const n=Number(v);if(!Number.isFinite(n)||n<min||n>max)throw new Error("A numeric value is out of range.");return n;};
 const rows=async(sql:string,...args:(string|number|null)[])=>(await db().prepare(sql).bind(...args).all()).results;
-async function pipelines():Promise<Pipeline[]> {
-  const saved=await rows("SELECT * FROM sales_pipelines ORDER BY name");
-  const list=saved.map(r=>({id:String(r.id),name:String(r.name),stages:JSON.parse(String(r.stages))}));
-  return list.some(p=>p.id==="default")?list:[defaultPipeline,...list];
-}
 async function customFieldValues(body:Row,entityType:"company"){
   const definitions=await rows("SELECT id,field_type AS fieldType,options FROM custom_field_definitions WHERE entity_type=?",entityType);
   const values:Array<{id:number;value:string}>=[];
@@ -56,7 +52,7 @@ export async function GET(request:Request){
       rows("SELECT * FROM deal_stage_history ORDER BY happened_at DESC LIMIT 500"),
       rows("SELECT * FROM account_signals ORDER BY occurred_at DESC"),
       canAdmin(user.role)?rows("SELECT * FROM qualification_alerts ORDER BY created_at DESC LIMIT 100"):rows("SELECT * FROM qualification_alerts WHERE owner=? ORDER BY created_at DESC LIMIT 100",user.email),
-      pipelines(),
+      pipelines(db()),
       rows("SELECT id,entity_type AS entityType,name,field_key AS fieldKey,field_type AS fieldType,options FROM custom_field_definitions WHERE entity_type='company' ORDER BY name"),
       rows("SELECT definition_id AS definitionId,entity_type AS entityType,entity_id AS entityId,value FROM custom_field_values WHERE entity_type='company'"),
     ]);
@@ -156,7 +152,7 @@ export async function POST(request:Request){
     }else if(action==="savePipeline"){
       if(!canAdmin(user.role))return Response.json({error:"Admin access is required."},{status:403});
       const id=str(b.id)||crypto.randomUUID(),name=requireText(b.name,"Pipeline name"),stages=validateStages(b.stages);
-      const before=(await pipelines()).find(p=>p.id===id);
+      const before=(await pipelines(db())).find(p=>p.id===id);
       const existing=await rows("SELECT id,stage_key,stage FROM deals WHERE pipeline_key=?",id);
       if(existing.some(d=>!stages.some(s=>s.key===(d.stage_key||d.stage))))throw new Error("Move deals out of a stage before removing it.");
       if(before&&stages.some(s=>before.stages.some(old=>old.key===s.key&&old.kind!==s.kind)))throw new Error("An existing stage cannot change outcome type. Add a new stage instead.");
@@ -165,45 +161,13 @@ export async function POST(request:Request){
         ...stages.map(s=>db().prepare("UPDATE deals SET stage_key=?,stage=?,probability=?,status=? WHERE pipeline_key=? AND COALESCE(stage_key,stage)=?").bind(s.key,s.name,s.probability,s.kind,id,s.key)),
       ]);await audit(user,action,"sales",id,action,{before,after:{name,stages}});
     }else if(action==="saveDeal"){
-      const id=b.id?number(b.id,1,1e12):0,before=id?await db().prepare("SELECT * FROM deals WHERE id=?").bind(id).first<Row>():null;
-      if(id&&!before)throw new Error("Deal not found.");
-      const pipe=(await pipelines()).find(p=>p.id===str(b.pipeline_key));
-      const stage=pipe?.stages.find(s=>s.key===str(b.stage_key));
-      if(!pipe||!stage)throw new Error("Choose a pipeline and one of its stages.");
-      const name=requireText(b.name,"Deal name"),owner=requireText(b.owner,"Owner"),reason=str(b.closed_reason),next=str(b.next_step);
-      if(stage.kind!=="Open"&&!reason)throw new Error("A won/lost reason is required.");
-      if(stage.kind==="Open"&&!next)throw new Error("Open deals need a next action.");
-      const value=Math.round(number(b.value,0,1e10)*100),contact=b.contact_id?number(b.contact_id,1,1e12):null;
-      let companyId=b.company_id?number(b.company_id,1,1e12):null,company:{id?:number;name:string}|null=companyId?await db().prepare("SELECT name FROM companies WHERE id=?").bind(companyId).first<{name:string}>():null;
-      // Preserve compatibility with older clients while converting the stored name into a durable relationship.
-      if(!companyId&&str(b.company)){company=await db().prepare("SELECT id,name FROM companies WHERE lower(name)=lower(?) LIMIT 1").bind(str(b.company)).first<{id:number;name:string}>();if(company)companyId=company.id??null}
-      if(companyId&&!company)throw new Error("Choose an existing company record.");
-      if(companyId&&contact&&!(await db().prepare("SELECT c.id FROM contacts c WHERE c.id=? AND (lower(trim(coalesce(c.company,'')))=lower(trim(?)) OR EXISTS (SELECT 1 FROM account_stakeholders s WHERE s.company_id=? AND s.contact_id=c.id)) LIMIT 1").bind(contact,company!.name,companyId).first()))throw new Error("Choose a contact associated with the selected company.");
-      const required=stage.requiredFields||[];
-      if(required.includes("company")&&!companyId)throw new Error(`${stage.name} requires a company.`);
-      if(required.includes("contact")&&!contact)throw new Error(`${stage.name} requires a primary contact.`);
-      if(required.includes("value")&&!value)throw new Error(`${stage.name} requires a deal value.`);
-      if(required.includes("closeDate")&&!str(b.close_date))throw new Error(`${stage.name} requires an expected close date.`);
-      if(required.includes("nextStep")&&!next)throw new Error(`${stage.name} requires a next action.`);
-      if(required.includes("products")&&(!id||!(await db().prepare("SELECT id FROM deal_line_items WHERE deal_id=? LIMIT 1").bind(id).first())))throw new Error(`${stage.name} requires at least one product or line item. Save the deal in an earlier stage, add products, then advance it.`);
-      if(required.includes("decisionCriteria")&&(!id||!(await db().prepare("SELECT id FROM deal_insights WHERE deal_id=? AND kind='Decision criterion' LIMIT 1").bind(id).first())))throw new Error(`${stage.name} requires documented decision criteria.`);
-      if(required.includes("approval")&&(!id||!(await db().prepare("SELECT id FROM deal_reviews WHERE deal_id=? AND status='Approved' LIMIT 1").bind(id).first())))throw new Error(`${stage.name} requires an approved deal review.`);
-      const changed=!before||before.pipeline_key!==pipe.id||(before.stage_key||before.stage)!==stage.key;
-      const params=[name,company?.name||"",companyId,contact,stage.name,owner,value,stage.probability,next,str(b.close_date)||null,str(b.lead_source)||"Direct",str(b.campaign),str(b.partner),str(b.forecast_category)||"Pipeline",stage.kind,pipe.id,stage.key,stage.kind==="Open"?"":reason,changed?now:String(before?.stage_entered_at||""),now];
-      const mutation=id?db().prepare("UPDATE deals SET name=?,company=?,company_id=?,contact_id=?,stage=?,owner=?,value=?,probability=?,next_step=?,close_date=?,lead_source=?,campaign=?,partner=?,forecast_category=?,status=?,pipeline_key=?,stage_key=?,closed_reason=?,stage_entered_at=?,updated_at=? WHERE id=?").bind(...params,id):db().prepare("INSERT INTO deals(name,company,company_id,contact_id,stage,owner,value,probability,next_step,close_date,lead_source,campaign,partner,forecast_category,status,pipeline_key,stage_key,closed_reason,stage_entered_at,updated_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").bind(...params,now);
-      // last_insert_rowid refers to the preceding deal insert inside this transaction.
-      const history=db().prepare("INSERT INTO deal_stage_history(deal_id,from_stage,to_stage,from_pipeline,to_pipeline,reason,actor,happened_at) VALUES ("+(id?"?":"last_insert_rowid()")+",?,?,?,?,?,?,?)").bind(...(id?[id]:[]),String(before?.stage||"Created"),stage.name,String(before?.pipeline_key||""),pipe.id,reason,user.email,now);
-      const [written]=await db().batch([mutation,...(changed?[history]:[])]);await audit(user,action,"sales",String(id||written?.meta.last_row_id||"new"),action,{before,after:b});
-      if(changed&&contact){
-        await db().prepare("INSERT INTO automation_enrollments(sequence_id,contact_id,current_step,status,next_run_at,enrolled_at) SELECT s.id,?,0,'Active',datetime('now','+'||COALESCE((SELECT delay_days FROM automation_steps WHERE sequence_id=s.id ORDER BY step_order LIMIT 1),0)||' days'),? FROM automation_sequences s WHERE s.active=1 AND s.trigger_type='Deal stage' AND lower(s.trigger_value)=lower(?) AND NOT EXISTS(SELECT 1 FROM automation_enrollments e WHERE e.sequence_id=s.id AND e.contact_id=? AND e.status='Active')").bind(contact,now,stage.name,contact).run();
-      }
+      const saved=await saveDeal(db(),{id:b.id?number(b.id,1,1e12):undefined,name:str(b.name),owner:str(b.owner),pipeline_key:str(b.pipeline_key),stage_key:str(b.stage_key),value:Number(b.value),contact_id:b.contact_id?number(b.contact_id,1,1e12):null,company_id:b.company_id?number(b.company_id,1,1e12):null,company:str(b.company),close_date:str(b.close_date),next_step:str(b.next_step),closed_reason:str(b.closed_reason),lead_source:str(b.lead_source),campaign:str(b.campaign),partner:str(b.partner),forecast_category:str(b.forecast_category)},user.email,now);
+      await audit(user,action,"sales",String(saved.id),action,{before:saved.before,after:b});
     }else if(action==="saveTask"){
-      const id=number(b.deal_id,1,1e12),due=requireText(b.due_date,"Due date");
-      if(!/^\d{4}-\d{2}-\d{2}$/.test(due)||!Number.isFinite(Date.parse(due)))throw new Error("Choose a valid due date.");
-      await db().batch([db().prepare("INSERT INTO deal_tasks(deal_id,title,owner,due_date,created_at) VALUES (?,?,?,?,?)").bind(id,requireText(b.title,"Task title"),requireText(b.owner,"Task owner"),due,now)]);await audit(user,action,"sales",String(id),action,{before:null,after:b});
+      const id=number(b.deal_id,1,1e12);await createDealTask(db(),{dealId:id,title:str(b.title),owner:str(b.owner),dueDate:str(b.due_date),now});await audit(user,action,"sales",String(id),action,{before:null,after:b});
     }else if(action==="completeTask"||action==="toggleDealTask"){
       const before=await db().prepare("SELECT * FROM deal_tasks WHERE id=?").bind(number(b.id,1,1e12)).first();
-      await db().batch([db().prepare("UPDATE deal_tasks SET completed=? WHERE id=?").bind(b.completed?1:0,b.id)]);await audit(user,action,"sales",String(b.id),action,{before,after:b});
+      await setDealTaskCompleted(db(),Number(b.id),Boolean(b.completed));await audit(user,action,"sales",String(b.id),action,{before,after:b});
     }else throw new Error("Unknown sales action.");
     return Response.json({ok:true});
   }catch(error){

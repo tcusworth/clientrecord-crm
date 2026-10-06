@@ -54,3 +54,26 @@ await companies.appendCompanyNote(db, acme.id, "Kickoff booked", "Owner", "2026-
 assert.equal(sqlite.prepare("SELECT notes FROM companies WHERE id=?").get(acme.id).notes, "[2026-09-27 Owner] Signed MSA\n[2026-09-28 Owner] Kickoff booked");
 await assert.rejects(companies.appendCompanyNote(db, 999999, "x", "o"), e => e.status === 404);
 console.log("PASS: company services");
+
+const deals = load("lib/services/deals.ts");
+await assert.rejects(deals.saveDeal(db, { name: "Big", owner: "Owner", pipeline_key: "default", stage_key: "Nope" }, "owner@example.com"), e => /pipeline/.test(e.message));
+await assert.rejects(deals.saveDeal(db, { name: "Big", owner: "Owner", pipeline_key: "default", stage_key: "Qualified" }, "owner@example.com"), e => /next action/.test(e.message));
+const big = await deals.saveDeal(db, { name: "Big", owner: "Owner", pipeline_key: "default", stage_key: "Qualified", next_step: "Call", value: 1500, company_id: acme.id }, "owner@example.com", "2026-09-27T10:00:00.000Z");
+assert.ok(big.id > 0); assert.equal(big.changed, true);
+assert.deepEqual({ ...sqlite.prepare("SELECT value,stage,status,company FROM deals WHERE id=?").get(big.id) }, { value: 150000, stage: "Qualified", status: "Open", company: "Acme" });
+assert.equal(sqlite.prepare("SELECT count(*) AS n FROM deal_stage_history WHERE deal_id=?").get(big.id).n, 1);
+const moved = await deals.saveDeal(db, { id: big.id, name: "Big", owner: "Owner", pipeline_key: "default", stage_key: "Won", closed_reason: "Great fit", value: 1500, company_id: acme.id }, "owner@example.com");
+assert.equal(moved.id, big.id); assert.equal(moved.before.stage, "Qualified");
+assert.equal(sqlite.prepare("SELECT status FROM deals WHERE id=?").get(big.id).status, "Won");
+await assert.rejects(deals.saveDeal(db, { id: 999999, name: "X", owner: "O", pipeline_key: "default", stage_key: "Qualified", next_step: "x" }, "o"), e => e.status === 404);
+const note = await deals.addDealNote(db, { dealId: big.id, body: "Champion is the CFO", owner: "owner@example.com" });
+assert.ok(note.id > 0);
+await assert.rejects(deals.addDealNote(db, { dealId: 999999, body: "x", owner: "o" }), e => e.status === 404);
+const act = await deals.logDealActivity(db, { dealId: big.id, type: "Call", body: "Pricing call", followUpAt: "2026-10-02", owner: "owner@example.com" });
+assert.ok(act.id > 0);
+assert.equal(sqlite.prepare("SELECT count(*) AS n FROM deal_tasks WHERE deal_id=?").get(big.id).n, 1, "follow-up task created");
+const dt = await deals.createDealTask(db, { dealId: big.id, title: "Send contract", owner: "Owner", dueDate: "2026-10-03" });
+assert.equal(await deals.setDealTaskCompleted(db, dt.id, true), true);
+assert.equal(sqlite.prepare("SELECT completed FROM deal_tasks WHERE id=?").get(dt.id).completed, 1);
+assert.equal(await deals.setDealTaskCompleted(db, 999999, true), false);
+console.log("PASS: deal services");

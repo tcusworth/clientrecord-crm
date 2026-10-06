@@ -7,6 +7,8 @@ import { calculateStakeholderCoverage, dealStakeholderRoles } from "@/lib/stakeh
 import { generateRecommendationCandidates, type RecommendationCandidate } from "@/lib/next-best-action";
 import { buildMeetingPreparationBrief } from "@/lib/meeting-intelligence";
 import { withoutShareToken } from "@/lib/proposals";
+import { addDealNote, dealRecord as dealRecordService, logDealActivity } from "@/lib/services/deals";
+import { ServiceError } from "@/lib/services/errors";
 
 type Row=Record<string,unknown>;
 const text=(value:unknown,max=4000)=>String(value??"").trim().slice(0,max);
@@ -18,11 +20,7 @@ const one=async(sql:string,...args:(string|number|null)[])=>env.DB.prepare(sql).
 const stringList=(value:unknown)=>Array.isArray(value)?value.map(item=>text(item,2000)).filter(Boolean):text(value,12000).split(/\r?\n/).map(item=>item.replace(/^[-*]\s*/,"").trim()).filter(Boolean).slice(0,50);
 const json=(value:unknown,fallback:unknown=[]):unknown=>{try{return JSON.parse(String(value??""))}catch{return fallback}};
 
-async function dealRecord(dealId:number){
-  const deal=await one("SELECT d.*,COALESCE(d.company_id,c.id) AS resolved_company_id FROM deals d LEFT JOIN companies c ON c.name=d.company WHERE d.id=?",dealId);
-  if(!deal)throw new Error("Deal not found.");
-  return deal;
-}
+async function dealRecord(dealId:number){return dealRecordService(env.DB,dealId)}
 
 async function ensureMeetingRecords(dealId:number){
   const activities=await rows("SELECT * FROM deal_activities WHERE deal_id=? AND lower(type) LIKE '%meeting%' ORDER BY happened_at",dealId);
@@ -201,18 +199,14 @@ export async function POST(request:Request){
     const body=await request.json() as Row,action=text(body.action,80),now=new Date().toISOString(),dealId=body.dealId?id(body.dealId):0;
     if(dealId)await dealRecord(dealId);
     if(action==="saveNote"){
-      const content=text(body.body);if(!content)throw new Error("Enter a note or comment.");
-      const result=await env.DB.prepare("INSERT INTO deal_notes(deal_id,kind,body,owner,pinned,created_at,updated_at) VALUES (?,?,?,?,?,?,?)").bind(dealId,text(body.kind,30)||"Note",content,user.email,bool(body.pinned)?1:0,now,now).run();
-      await audit(user,action,"deal_note",result.meta.last_row_id,"Added a deal note",{dealId,kind:body.kind,pinned:bool(body.pinned)});
+      const {id:noteId}=await addDealNote(env.DB,{dealId,body:text(body.body),kind:text(body.kind,30),pinned:bool(body.pinned),owner:user.email,now});
+      await audit(user,action,"deal_note",noteId,"Added a deal note",{dealId,kind:body.kind,pinned:bool(body.pinned)});
     }else if(action==="toggleNotePin"){
       const noteId=id(body.id),before=await one("SELECT * FROM deal_notes WHERE id=? AND deal_id=?",noteId,dealId);if(!before)throw new Error("Note not found.");
       await env.DB.prepare("UPDATE deal_notes SET pinned=?,updated_at=? WHERE id=?").bind(bool(body.pinned)?1:0,now,noteId).run();await audit(user,action,"deal_note",noteId,"Changed pinned note status",{before,after:{pinned:bool(body.pinned)}});
     }else if(action==="saveActivity"){
-      const type=text(body.type,50),content=text(body.body),happened=text(body.happenedAt,40)||now;if(!type||!content||!Number.isFinite(Date.parse(happened)))throw new Error("Activity type, details, and a valid date are required.");
-      const deal=await dealRecord(dealId),contactId=body.contactId?id(body.contactId):deal.contact_id?Number(deal.contact_id):null,follow=text(body.followUpAt,20)||null;
-      const result=await env.DB.prepare("INSERT INTO deal_activities(deal_id,company_id,contact_id,type,subject,body,owner,outcome,happened_at,follow_up_at,source,thread_key,external_id,response_expected,pinned,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").bind(dealId,deal.resolved_company_id?Number(deal.resolved_company_id):null,contactId,type,text(body.subject,240),content,text(body.owner,200)||user.email,text(body.outcome,1000),new Date(happened).toISOString(),follow,"Manual",text(body.threadKey,240)||null,null,bool(body.responseExpected)?1:0,bool(body.pinned)?1:0,now,now).run();
-      if(follow)await env.DB.prepare("INSERT INTO deal_tasks(deal_id,title,owner,due_date,created_at) VALUES (?,?,?,?,?)").bind(dealId,text(body.followUpTitle,240)||`Follow up: ${text(body.subject,180)||type}`,text(body.owner,200)||user.email,follow.slice(0,10),now).run();
-      await audit(user,action,"deal_activity",result.meta.last_row_id,`Recorded ${type}`,{dealId,contactId,outcome:body.outcome,followUpAt:follow,responseExpected:bool(body.responseExpected)});
+      const {id:activityId,contactId,followUpAt}=await logDealActivity(env.DB,{dealId,type:text(body.type,50),body:text(body.body),subject:text(body.subject,240),outcome:text(body.outcome,1000),happenedAt:text(body.happenedAt,40),followUpAt:text(body.followUpAt,20),followUpTitle:text(body.followUpTitle,240),contactId:body.contactId?id(body.contactId):null,owner:text(body.owner,200)||user.email,responseExpected:bool(body.responseExpected),pinned:bool(body.pinned),threadKey:text(body.threadKey,240),now});
+      await audit(user,action,"deal_activity",activityId,`Recorded ${text(body.type,50)}`,{dealId,contactId,outcome:body.outcome,followUpAt,responseExpected:bool(body.responseExpected)});
     }else if(action==="saveMeeting"){
       const meetingId=text(body.id,100)||crypto.randomUUID(),before=await one("SELECT * FROM deal_meetings WHERE id=? AND deal_id=?",meetingId,dealId),subject=text(body.subject,240),status=text(body.status,30)||"Scheduled",startsAt=text(body.startsAt,50),endsAt=text(body.endsAt,50)||null,sourceProvider=text(body.sourceProvider,40)||"Manual";
       if(!subject||!Number.isFinite(Date.parse(startsAt)))throw new Error("Meeting subject and a valid start time are required.");if(endsAt&&(!Number.isFinite(Date.parse(endsAt))||Date.parse(endsAt)<Date.parse(startsAt)))throw new Error("Meeting end time must be after the start time.");if(!["Scheduled","Completed","Cancelled"].includes(status))throw new Error("Choose scheduled, completed, or cancelled.");if(!["Manual","Google","Microsoft","Meetily","Granola","Other"].includes(sourceProvider))throw new Error("Choose a supported meeting source.");
@@ -291,5 +285,5 @@ export async function POST(request:Request){
       const companyId=id(body.companyId),company=await one("SELECT * FROM companies WHERE id=?",companyId);if(!company)throw new Error("Company not found.");let domain=text(company.domain,240).toLowerCase();if(!domain&&company.website){try{domain=new URL(String(company.website)).hostname.replace(/^www\./,"").toLowerCase()}catch{}}if(!domain)throw new Error("Add a company website before enriching the record.");const updated=await env.DB.prepare("UPDATE contacts SET company=?,updated_at=? WHERE company='' AND lower(substr(email,instr(email,'@')+1))=?").bind(String(company.name),now,domain).run();await env.DB.prepare("UPDATE companies SET domain=?,updated_at=? WHERE id=?").bind(domain,now,companyId).run();await audit(user,action,"company",companyId,"Enriched company from its domain",{domain,contactsMatched:updated.meta.changes});return Response.json({ok:true,domain,contactsMatched:updated.meta.changes});
     }else throw new Error("Unknown deal workspace action.");
     return Response.json({ok:true});
-  }catch(error){const message=error instanceof Error?error.message:"The change could not be saved.";return Response.json({error:/SQLITE|constraint/i.test(message)?"The change conflicts with an existing or missing record.":message},{status:400})}
+  }catch(error){if(error instanceof ServiceError)return Response.json({error:error.message},{status:error.status});const message=error instanceof Error?error.message:"The change could not be saved.";return Response.json({error:/SQLITE|constraint/i.test(message)?"The change conflicts with an existing or missing record.":message},{status:400})}
 }
