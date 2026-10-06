@@ -52,7 +52,7 @@ const tokenRequest = fields => fetch(meta.token_endpoint, { method: "POST", head
 const token = await (await tokenRequest({ grant_type: "authorization_code", code, redirect_uri: redirect, code_verifier: verifier })).json();
 assert.ok(token.access_token && token.refresh_token, "tokens issued"); assert.equal(token.expires_in, 3600);
 
-const rpc = (body, bearer = token.access_token) => fetch(`${base}/mcp`, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${bearer}` }, body: JSON.stringify(body) });
+const rpc = (body, bearer = token.access_token) => fetch(`${base}/mcp`, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${bearer}` }, body: typeof body === "string" ? body : JSON.stringify(body) });
 assert.equal((await rpc({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }, "bogus")).status, 401, "bad token rejected");
 const init = await (await rpc({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "e2e", version: "0" } } })).json();
 assert.equal(init.result.serverInfo.name, "clientrecord");
@@ -60,6 +60,11 @@ assert.equal(init.result.serverInfo.name, "clientrecord");
 for (const method of ["GET", "DELETE"]) { const res = await fetch(`${base}/mcp`, { method, headers: { accept: "text/event-stream", authorization: `Bearer ${token.access_token}` }, signal: AbortSignal.timeout(5000) }); assert.equal(res.status, 405, `${method} /mcp`); assert.equal(res.headers.get("allow"), "POST"); assert.equal((await res.json()).error.code, -32000); }
 const tools = await (await rpc({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} })).json();
 assert.equal(tools.result.tools.length, 19);
+// Only tools/call consumes the per-person 60/minute budget: notifications and 61 tools/list in a row are never rate limited.
+assert.equal((await rpc({ jsonrpc: "2.0", method: "notifications/initialized" })).status, 202, "notification accepted");
+for (let i = 0; i < 61; i++) { const res = await rpc({ jsonrpc: "2.0", id: 100 + i, method: "tools/list", params: {} }); assert.equal(res.status, 200, `tools/list #${i + 1} not rate limited`); await res.body?.cancel(); }
+const parseError = await rpc("{not json");
+assert.equal(parseError.status, 400, "malformed JSON still gets the transport's parse error"); assert.equal((await parseError.json()).error.code, -32700);
 const summary = await (await rpc({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "pipeline_summary", arguments: {} } })).json();
 assert.ok(!summary.result.isError, JSON.stringify(summary));
 const email = `e2e-${Date.now()}@example.com`;

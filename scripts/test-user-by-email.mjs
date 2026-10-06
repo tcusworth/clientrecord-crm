@@ -24,4 +24,7 @@ for (let i = 0; i < 3; i++) assert.equal((await rateLimitKey("mcp:a@example.com"
 const over = await rateLimitKey("mcp:a@example.com", 3);
 assert.equal(over.limited, true); assert.ok(over.retryAfter >= 1);
 assert.equal((await rateLimitKey("mcp:b@example.com", 3)).limited, false, "keys are independent");
+assert.equal((await rateLimitKey("mcp:c@example.com", 3, 60, 3)).limited, false, "a cost of 3 fits a limit of 3");
+assert.equal((await rateLimitKey("mcp:c@example.com", 3, 60, 1)).limited, true, "cost counts toward the window");
+assert.equal((await rateLimitKey("mcp:d@example.com", 3, 60, 4)).limited, true, "a single cost above the limit is limited");
 console.log("PASS: userByEmail resolves owner/members/permissions and rejects inactive/unknown; rateLimitKey limits per key.");
