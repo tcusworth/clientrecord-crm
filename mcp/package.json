@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev --config wrangler.jsonc --persist-to ../.wrangler/state --port 8788",
+    "dev": "wrangler dev --config wrangler.jsonc --persist-to ../.wrangler/state --port 8788 --routes 'localhost/*'",
     "deploy": "wrangler deploy --config wrangler.jsonc",
     "typecheck": "tsc --noEmit -p ."
   },
