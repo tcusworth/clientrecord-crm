@@ -18,7 +18,7 @@ export async function captureLead(input:LeadInput,user:CRMUser){
   const existing=await env.DB.prepare("SELECT * FROM contacts WHERE lower(email)=lower(?)").bind(address).first<Row>();
   let companyId:number|null=null,owner=user.email;
   if(companyName){const company=await env.DB.prepare("SELECT * FROM companies WHERE lower(name)=lower(?) OR (domain<>'' AND lower(domain)=lower(?)) LIMIT 1").bind(companyName,domain(address)).first<Row>();if(company){companyId=Number(company.id);owner=clean(company.owner,200)||owner}else{const result=await env.DB.prepare("INSERT INTO companies(name,website,domain,stage,owner,updated_at) VALUES (?,?,?,'Prospect',?,?)").bind(companyName,website,domain(address),owner,now).run();companyId=Number(result.meta.last_row_id)}}
-  let contactId:number|null=existing?Number(existing.id):null,duplicateContactId:number|null=existing?Number(existing.id):null,status=existing?"Duplicate":"New";
+  let contactId:number|null=existing?Number(existing.id):null,duplicateContactId:number|null=existing?Number(existing.id):null;const status=existing?"Duplicate":"New";
   if(!existing){const created=await env.DB.prepare("INSERT INTO contacts(first_name,last_name,email,company,title,phone,location,notes,lead_source,stage,tags,subscribed,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,'Lead','[]',1,?,?)").bind(firstName,lastName,address,companyName,"","","",clean(input.message,4000),source,now,now).run();contactId=Number(created.meta.last_row_id);duplicateContactId=null;}
   const task=await env.DB.prepare("INSERT INTO tasks(contact_id,title,due_date,owner,status,completed) VALUES (?,? ,date('now'),?,'Open',0)").bind(contactId,`Respond to ${firstName||address} · ${source}`,owner).run();
   const intakeId=crypto.randomUUID();

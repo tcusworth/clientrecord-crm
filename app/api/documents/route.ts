@@ -32,7 +32,7 @@ export async function GET(request:Request){
       const type=safeContentType(row.content_type),preview=url.searchParams.get("preview")==="1"&&inlinePreviewTypes.has(type);return new Response(object.body,{headers:headers(String(row.filename),type,preview)});
     }
     const sensitive=can(access.user,"documents.manage_sensitive")?1:0,entityType=clean(url.searchParams.get("entityType"),20),entityId=Number(url.searchParams.get("entityId"))||0,archived=url.searchParams.get("archived")==="1";
-    let predicate="(?=1 OR d.sensitive=0) AND d.status=?",args:(string|number|null)[]=[sensitive,archived?"Archived":"Active"];
+    let predicate="(?=1 OR d.sensitive=0) AND d.status=?";const args:(string|number|null)[]=[sensitive,archived?"Archived":"Active"];
     if(["company","contact","deal"].includes(entityType)&&entityId){predicate+=` AND d.${entityType}_id=?`;args.push(entityId)}
     const result=await env.DB.prepare(`SELECT d.*,v.filename,v.content_type AS contentType,v.size,v.uploaded_by AS uploadedBy,v.uploaded_at AS uploadedAt,c.name AS companyName,ct.first_name||' '||ct.last_name AS contactName,x.name AS dealName
       FROM client_documents d JOIN document_versions v ON v.document_id=d.id AND v.version=d.latest_version LEFT JOIN companies c ON c.id=d.company_id LEFT JOIN contacts ct ON ct.id=d.contact_id LEFT JOIN deals x ON x.id=d.deal_id WHERE ${predicate} ORDER BY d.updated_at DESC LIMIT 250`).bind(...args).all();
