@@ -29,12 +29,13 @@ export async function updateContact(db: D1Database, id: number, input: ContactIn
   for (const sequence of matched.results) { const exists = await db.prepare("SELECT id FROM automation_enrollments WHERE sequence_id=? AND contact_id=? AND status='Active'").bind(sequence.id, id).first(); if (!exists) await db.prepare("INSERT INTO automation_enrollments (sequence_id,contact_id,current_step,status,next_run_at,enrolled_at) VALUES (?,?,0,'Active',datetime('now',?),datetime('now'))").bind(sequence.id, id, `+${Math.max(0, Number(sequence.delayDays) || 0)} days`).run(); }
 }
 
-export async function logContactActivity(db: D1Database, input: { contactId: number; type?: string; note: string; nextFollowUp?: string; owner: string; now?: string }): Promise<void> {
+// keepLatestContact (AI path, which accepts back-dated activities): last_contact only ever moves forward.
+export async function logContactActivity(db: D1Database, input: { contactId: number; type?: string; note: string; nextFollowUp?: string; owner: string; now?: string }, options: { keepLatestContact?: boolean } = {}): Promise<void> {
   const note = s(input.note), type = s(input.type, "Note"), now = input.now || new Date().toISOString(), next = s(input.nextFollowUp);
   if (!input.contactId || !note) throw new ServiceError("Contact and note are required.");
   if (!(await db.prepare("SELECT id FROM contacts WHERE id=?").bind(input.contactId).first())) throw new ServiceError("Contact not found.", 404);
   if (next && !isDate(next)) throw new ServiceError("Follow-up date must be YYYY-MM-DD.");
-  const statements = [db.prepare("INSERT INTO activities (contact_id,type,note,happened_at) VALUES (?,?,?,?)").bind(input.contactId, type, note, now), db.prepare("UPDATE contacts SET last_contact=? WHERE id=?").bind(now.slice(0, 10), input.contactId)];
+  const statements = [db.prepare("INSERT INTO activities (contact_id,type,note,happened_at) VALUES (?,?,?,?)").bind(input.contactId, type, note, now), db.prepare(`UPDATE contacts SET last_contact=${options.keepLatestContact ? "MAX(COALESCE(last_contact,''),?)" : "?"} WHERE id=?`).bind(now.slice(0, 10), input.contactId)];
   if (next) statements.push(db.prepare("INSERT INTO tasks (contact_id,title,due_date,owner,status,completed) VALUES (?,?,?,?,'Open',0)").bind(input.contactId, "Follow up after " + type.toLowerCase(), next, input.owner), db.prepare("UPDATE contacts SET next_follow_up=? WHERE id=?").bind(next, input.contactId));
   await db.batch(statements);
 }

@@ -39,6 +39,13 @@ await contacts.logContactActivity(db, { contactId: ada, note: "Discussed pricing
 assert.equal(sqlite.prepare("SELECT type,note FROM activities WHERE contact_id=?").get(ada).type, "Note");
 assert.deepEqual({ ...sqlite.prepare("SELECT last_contact,next_follow_up FROM contacts WHERE id=?").get(ada) }, { last_contact: "2026-09-27", next_follow_up: "2026-10-05" });
 await assert.rejects(contacts.logContactActivity(db, { contactId: 999999, note: "x", owner: "o" }), e => e.status === 404);
+// opt-in (AI path): an older activity never moves last_contact backwards; without the flag (CRM) it is set as before
+await contacts.logContactActivity(db, { contactId: ada, note: "Old call", owner: "Owner", now: "2026-01-02T10:00:00.000Z" }, { keepLatestContact: true });
+assert.equal(sqlite.prepare("SELECT last_contact FROM contacts WHERE id=?").get(ada).last_contact, "2026-09-27", "flag keeps the newer date");
+await contacts.logContactActivity(db, { contactId: ada, note: "Later call", owner: "Owner", now: "2026-09-29T10:00:00.000Z" }, { keepLatestContact: true });
+assert.equal(sqlite.prepare("SELECT last_contact FROM contacts WHERE id=?").get(ada).last_contact, "2026-09-29", "flag still advances");
+await contacts.logContactActivity(db, { contactId: ada, note: "CRM back-dated", owner: "Owner", now: "2026-09-27T10:00:00.000Z" });
+assert.equal(sqlite.prepare("SELECT last_contact FROM contacts WHERE id=?").get(ada).last_contact, "2026-09-27", "CRM path unchanged");
 const { id: task } = await contacts.createContactTask(db, { contactId: ada, title: "Send deck", dueDate: "2026-10-01", owner: "Owner" });
 assert.equal(await contacts.completeContactTask(db, task), true);
 assert.equal(sqlite.prepare("SELECT completed,status FROM tasks WHERE id=?").get(task).status, "Completed");

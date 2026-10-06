@@ -124,6 +124,20 @@ const dupEmail = await callTool(editor, "update_contact", { id: created.result.i
 assert.deepEqual({ ok: dupEmail.ok, status: dupEmail.status, error: dupEmail.error }, { ok: false, status: 409, error: "A contact with that email already exists." });
 assert.equal((await callTool(editor, "update_contact", { id: created.result.id, email: "Grace@Example.com" })).ok, true, "own email (any case) is fine");
 
+// A5: no future activity dates; last_contact never moves backwards
+const today = new Date().toISOString().slice(0, 10), future = new Date(Date.now() + 86400000).toISOString();
+const beforeFuture = sqlite.prepare("SELECT (SELECT count(*) FROM activities) AS a,(SELECT count(*) FROM deal_activities) AS d").get();
+for (const recordType of ["contact", "deal"]) { const r = await callTool(editor, "log_activity", { recordType, id: 1, type: "Call", details: "Time travel", happenedAt: future }); assert.deepEqual({ status: r.status, error: r.error }, { status: 400, error: "happenedAt can't be in the future." }, recordType); }
+assert.deepEqual({ ...sqlite.prepare("SELECT (SELECT count(*) FROM activities) AS a,(SELECT count(*) FROM deal_activities) AS d").get() }, { ...beforeFuture }, "future dates write nothing");
+assert.equal((await callTool(editor, "log_activity", { recordType: "contact", id: 1, type: "Call", details: "Just now", happenedAt: new Date(Date.now() + 60000).toISOString() })).ok, true, "small clock skew allowed");
+sqlite.prepare("UPDATE contacts SET last_contact=? WHERE id=1").run(today);
+assert.equal((await callTool(editor, "log_activity", { recordType: "contact", id: 1, type: "Meeting", details: "Back-dated", happenedAt: "2026-01-15T10:00:00Z" })).ok, true);
+assert.equal(sqlite.prepare("SELECT last_contact FROM contacts WHERE id=1").get().last_contact, today, "older activity leaves newer last_contact");
+assert.equal(sqlite.prepare("SELECT happened_at FROM activities ORDER BY id DESC LIMIT 1").get().happened_at, "2026-01-15T10:00:00.000Z");
+sqlite.prepare("UPDATE contacts SET last_contact='2020-01-01' WHERE id=1").run();
+assert.equal((await callTool(editor, "log_activity", { recordType: "contact", id: 1, type: "Call", details: "Newer", happenedAt: "2026-01-15T10:00:00Z" })).ok, true);
+assert.equal(sqlite.prepare("SELECT last_contact FROM contacts WHERE id=1").get().last_contact, "2026-01-15", "newer activity still advances last_contact");
+
 // sanitize
 assert.deepEqual(sanitize({ a: "b", share_token: "x", apiKeyHash: "y", nested: [{ password: "p", ok: 1 }] }), { a: "b", nested: [{ ok: 1 }] });
 console.log("PASS: MCP tools — catalogue, reads, permissions, writes, audit attribution, sanitising");
