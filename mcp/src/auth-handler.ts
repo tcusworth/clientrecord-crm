@@ -2,11 +2,15 @@ import { AuthorizationError, type AuthRequest, type OAuthHelpers } from "@cloudf
 import { userByEmail } from "@/lib/crm-auth";
 import { CONNECTIONS_COOKIE, CONSENT_COOKIE, CONSENT_TTL_SECONDS, clearConsentCookie, connectionsPage, consentCookie, consentPage, escapeHtml, identify, readCookie } from "./consent";
 
-export type AuthEnv = Omit<Cloudflare.Env, "OAUTH_PROVIDER"> & { OAUTH_PROVIDER: OAuthHelpers };
+// The shared Env marks the MCP-only bindings optional (the CRM Worker lacks them); this Worker always has them.
+export type AuthEnv = Omit<Cloudflare.Env, "OAUTH_KV" | "OAUTH_PROVIDER"> & { OAUTH_KV: KVNamespace; OAUTH_PROVIDER: OAuthHelpers };
 // form-action must also allow the client's redirect origin: Chrome applies form-action to the redirect that follows the POST.
 const formSource = (redirectUri?: string) => { if (!redirectUri) return ""; try { const u = new URL(redirectUri); return u.protocol === "http:" || u.protocol === "https:" ? ` ${u.origin}` : ` ${u.protocol}`; } catch { return ""; } };
 const html = (body: string, status = 200, headers: Record<string, string> = {}, redirectUri?: string) => new Response(body, { status, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-frame-options": "DENY", "x-content-type-options": "nosniff", "referrer-policy": "no-referrer", "content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; form-action 'self'${formSource(redirectUri)}; frame-ancestors 'none'; base-uri 'none'`, ...headers } });
 const denyPage = (message: string, status = 403) => html(`<!doctype html><title>Not allowed</title><p style="font:16px system-ui;max-width:560px;margin:48px auto">${escapeHtml(message)}</p>`, status);
+const badRequest = () => denyPage("This request could not be completed. Start the connection again.", 400);
+// Malformed bodies or provider/KV failures become a plain 400 page with no internal details (never an uncaught 500).
+const safely = async <T>(work: () => Promise<T>): Promise<T | undefined> => { try { return await work(); } catch (error) { console.error("Authorization step failed", error instanceof Error ? error.name : "unknown"); return undefined; } };
 const randomId = () => Array.from(crypto.getRandomValues(new Uint8Array(24)), b => b.toString(16).padStart(2, "0")).join("");
 const redirect = (location: string, status = 302, cookie = clearConsentCookie()) => new Response(null, { status, headers: { location, "cache-control": "no-store", "set-cookie": cookie } });
 // Error back to the client. Only ever called with a redirect URI the library already validated against the registered client.
@@ -31,7 +35,8 @@ async function ask(request: Request, env: AuthEnv) {
     if (error instanceof AuthorizationError && error.redirectUri) return errorRedirect(error.redirectUri, error.code, error.state, error.issuer);
     return denyPage(error instanceof AuthorizationError ? `This connection request is not valid (${error.description}). Remove the connector and add it again.` : "This connection request could not be checked. Try again.", 400);
   }
-  const client = await env.OAUTH_PROVIDER.lookupClient(authRequest.clientId); if (!client) return denyPage("Unknown AI tool. Remove the connector and add it again.", 400);
+  const lookup = await safely(async () => ({ client: await env.OAUTH_PROVIDER.lookupClient(authRequest.clientId) })); if (!lookup) return badRequest();
+  const client = lookup.client; if (!client) return denyPage("Unknown AI tool. Remove the connector and add it again.", 400);
   const consentId = randomId(), clientName = client.clientName || "AI tool";
   await env.OAUTH_KV.put(`consent:${consentId}`, JSON.stringify({ authRequest, email: user.email, clientName }), { expirationTtl: CONSENT_TTL_SECONDS });
   return html(consentPage({ clientName, redirectUri: authRequest.redirectUri, email: user.email, role: user.role, consentId }), 200, { "set-cookie": consentCookie(consentId) }, authRequest.redirectUri);
@@ -39,21 +44,23 @@ async function ask(request: Request, env: AuthEnv) {
 
 async function decide(request: Request, env: AuthEnv) {
   const person = await identify(request, env); if (!person) return denyPage("Sign in through Cloudflare Access to continue.", 401);
-  const form = await request.formData(), consentId = String(form.get("consentId") || ""), decision = String(form.get("decision") || "");
+  const form = await safely(() => request.formData()); if (!form) return badRequest();
+  const consentId = String(form.get("consentId") || ""), decision = String(form.get("decision") || "");
   if (!consentId || readCookie(request, CONSENT_COOKIE) !== consentId) return denyPage("This approval page expired or was opened elsewhere. Start the connection again.", 400);
   const saved = await env.OAUTH_KV.get(`consent:${consentId}`, "json") as { authRequest: AuthRequest; email: string; clientName: string } | null;
   await env.OAUTH_KV.delete(`consent:${consentId}`);
   if (!saved || saved.email !== person.email) return denyPage("This approval page expired or belongs to someone else. Start the connection again.", 400);
   if (decision !== "allow") return errorRedirect(saved.authRequest.redirectUri, "access_denied", saved.authRequest.state, saved.authRequest.issuer);
   const user = await userByEmail(person.email); if (!user) return denyPage("Your account doesn't have access to ClientRecord.");
-  const { redirectTo } = await env.OAUTH_PROVIDER.completeAuthorization({ request: saved.authRequest, userId: user.email, metadata: { clientName: saved.clientName }, scope: saved.authRequest.scope, props: { email: user.email, clientName: saved.clientName } });
-  return redirect(redirectTo);
+  const completed = await safely(() => env.OAUTH_PROVIDER.completeAuthorization({ request: saved.authRequest, userId: user.email, metadata: { clientName: saved.clientName }, scope: saved.authRequest.scope, props: { email: user.email, clientName: saved.clientName } }));
+  return completed ? redirect(completed.redirectTo) : badRequest();
 }
 
 async function connections(request: Request, env: AuthEnv) {
   const person = await identify(request, env); if (!person) return denyPage("Sign in through Cloudflare Access to continue.", 401);
   if (request.method === "POST") {
-    const form = await request.formData(), token = String(form.get("token") || ""), grantId = String(form.get("grantId") || "");
+    const form = await safely(() => request.formData()); if (!form) return badRequest();
+    const token = String(form.get("token") || ""), grantId = String(form.get("grantId") || "");
     if (!token || token !== readCookie(request, CONNECTIONS_COOKIE)) return denyPage("This page expired. Reload it and try again.", 400);
     // revokeGrant is keyed by grant:<userId>:<grantId>, so it can only ever touch the signed-in person's own grants.
     if (/^[A-Za-z0-9_-]{1,128}$/.test(grantId)) await env.OAUTH_PROVIDER.revokeGrant(grantId, person.email);

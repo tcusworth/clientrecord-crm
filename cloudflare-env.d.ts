@@ -23,7 +23,7 @@ declare namespace Cloudflare {
     QUICKBOOKS_ENVIRONMENT?: string;
     QUICKBOOKS_DEFAULT_ITEM_ID?: string;
     DEV_AUTHORIZE_AS?: string;
-    OAUTH_KV: KVNamespace;
-    OAUTH_PROVIDER: unknown;
+    OAUTH_KV?: KVNamespace;
+    OAUTH_PROVIDER?: unknown;
   }
 }

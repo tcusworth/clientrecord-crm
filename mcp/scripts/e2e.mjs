@@ -27,6 +27,9 @@ async function startConsent(state) {
   return { cookie: res.headers.get("set-cookie").split(";")[0], consentId: page.match(/name="consentId" value="([^"]+)"/)[1] };
 }
 
+// Malformed form bodies get the plain 400 page, never an uncaught 500 with internals.
+for (const path of ["/authorize", "/connections"]) { const res = await fetch(`${base}${path}`, { method: "POST", redirect: "manual", headers: { "content-type": "multipart/form-data; boundary=x" }, body: "not multipart" }); assert.equal(res.status, 400, `malformed POST ${path}`); assert.ok(!/error|stack|TypeError/i.test(await res.text()), `no internals on ${path}`); }
+
 // Deny: redirect carries error=access_denied and the state, and no code.
 const denied = await startConsent("deny-state");
 const deniedRes = await post(`${base}/authorize`, { cookie: denied.cookie }, { consentId: denied.consentId, decision: "deny" });
@@ -35,7 +38,7 @@ assert.equal(deniedUrl.searchParams.get("error"), "access_denied"); assert.equal
 
 // Allow flow.
 const { cookie, consentId } = await startConsent("xyz");
-const wrongCookie = await post(`${base}/authorize`, { cookie: "cr_consent=forged" }, { consentId, decision: "allow" });
+const wrongCookie = await post(`${base}/authorize`, { cookie: "__Host-cr_consent=forged" }, { consentId, decision: "allow" });
 assert.equal(wrongCookie.status, 400, "CSRF: forged cookie refused");
 const noCookie = await post(`${base}/authorize`, {}, { consentId, decision: "allow" });
 assert.equal(noCookie.status, 400, "CSRF: missing cookie refused");
@@ -53,6 +56,8 @@ const rpc = (body, bearer = token.access_token) => fetch(`${base}/mcp`, { method
 assert.equal((await rpc({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }, "bogus")).status, 401, "bad token rejected");
 const init = await (await rpc({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "e2e", version: "0" } } })).json();
 assert.equal(init.result.serverInfo.name, "clientrecord");
+// Stateless server: nothing to stream, so an authenticated GET (SSE) or DELETE (session end) is refused instead of hanging open.
+for (const method of ["GET", "DELETE"]) { const res = await fetch(`${base}/mcp`, { method, headers: { accept: "text/event-stream", authorization: `Bearer ${token.access_token}` }, signal: AbortSignal.timeout(5000) }); assert.equal(res.status, 405, `${method} /mcp`); assert.equal(res.headers.get("allow"), "POST"); assert.equal((await res.json()).error.code, -32000); }
 const tools = await (await rpc({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} })).json();
 assert.equal(tools.result.tools.length, 19);
 const summary = await (await rpc({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "pipeline_summary", arguments: {} } })).json();
@@ -70,9 +75,9 @@ assert.ok(refreshed.access_token, "refresh works");
 const conn = await fetch(`${base}/connections`); const connPage = await conn.text(), connCookie = conn.headers.get("set-cookie").split(";")[0];
 const row = connPage.split("<tr>").find(r => r.includes(`<strong>${escapedName}</strong>`)); assert.ok(row, "e2e grant listed on /connections");
 const grantId = row.match(/name="grantId" value="([^"]+)"/)[1], tok = row.match(/name="token" value="([^"]+)"/)[1];
-assert.equal((await post(`${base}/connections`, { cookie: "cr_connections=forged" }, { grantId, token: tok })).status, 400, "connections CSRF: forged cookie refused");
+assert.equal((await post(`${base}/connections`, { cookie: "__Host-cr_connections=forged" }, { grantId, token: tok })).status, 400, "connections CSRF: forged cookie refused");
 assert.equal((await post(`${base}/connections`, { cookie: connCookie }, { grantId, token: tok })).status, 303);
 assert.equal((await rpc({ jsonrpc: "2.0", id: 6, method: "tools/list", params: {} }, refreshed.access_token)).status, 401, "revoked grant: refreshed access token rejected");
 assert.equal((await rpc({ jsonrpc: "2.0", id: 7, method: "tools/list", params: {} }, token.access_token)).status, 401, "revoked grant: original access token rejected");
 for (const rt of new Set([token.refresh_token, refreshed.refresh_token].filter(Boolean))) assert.ok((await tokenRequest({ grant_type: "refresh_token", refresh_token: rt })).status >= 400, "revoked grant: refresh token rejected");
-console.log(`PASS: e2e — registration, consent (CSRF-protected, single-use, deny), PKCE code exchange, 19 tools, read + write, refresh, revoke (access + refresh tokens). Created test contact ${email}.`);
+console.log(`PASS: e2e — registration, consent (CSRF-protected, single-use, deny), PKCE code exchange, 19 tools, GET/DELETE /mcp 405, read + write, refresh, revoke (access + refresh tokens). Created test contact ${email}.`);
