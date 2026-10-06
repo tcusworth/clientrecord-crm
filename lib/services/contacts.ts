@@ -17,11 +17,14 @@ export async function createContact(db: D1Database, input: ContactInput): Promis
   return { id: Number(result.meta.last_row_id) };
 }
 
-export async function updateContact(db: D1Database, id: number, input: ContactInput, extra: D1PreparedStatement[] = []): Promise<void> {
+// enrollOnlyOnStageChange (AI path): stage-triggered sequences enroll only when the stage actually changes.
+export async function updateContact(db: D1Database, id: number, input: ContactInput, extra: D1PreparedStatement[] = [], options: { enrollOnlyOnStageChange?: boolean } = {}): Promise<void> {
   const email = s(input.email).toLowerCase(), stage = s(input.stage, "Lead");
   if (!id || !email) throw new ServiceError("Contact and email are required.");
-  if (!(await db.prepare("SELECT id FROM contacts WHERE id=?").bind(id).first())) throw new ServiceError("Contact not found.", 404);
+  const before = await db.prepare("SELECT id,stage FROM contacts WHERE id=?").bind(id).first<{ id: number; stage: string | null }>();
+  if (!before) throw new ServiceError("Contact not found.", 404);
   await db.batch([db.prepare("UPDATE contacts SET first_name=?,last_name=?,email=?,company=?,title=?,phone=?,location=?,notes=?,lead_source=?,stage=?,tags=?,updated_at=datetime('now') WHERE id=?").bind(s(input.firstName), s(input.lastName), email, s(input.company), s(input.title), s(input.phone), s(input.location), s(input.notes), s(input.leadSource, "Direct"), stage, tagsJson(input.tags), id), ...extra, ...reconcileCompanyNamesStatements(db, [input.company])]);
+  if (options.enrollOnlyOnStageChange && String(before.stage || "").toLowerCase() === stage.toLowerCase()) return;
   const matched = await db.prepare("SELECT s.id,(SELECT delay_days FROM automation_steps WHERE sequence_id=s.id ORDER BY step_order LIMIT 1) AS delayDays FROM automation_sequences s WHERE s.active=1 AND s.trigger_type='Contact stage' AND lower(s.trigger_value)=lower(?)").bind(stage).all();
   for (const sequence of matched.results) { const exists = await db.prepare("SELECT id FROM automation_enrollments WHERE sequence_id=? AND contact_id=? AND status='Active'").bind(sequence.id, id).first(); if (!exists) await db.prepare("INSERT INTO automation_enrollments (sequence_id,contact_id,current_step,status,next_run_at,enrolled_at) VALUES (?,?,0,'Active',datetime('now',?),datetime('now'))").bind(sequence.id, id, `+${Math.max(0, Number(sequence.delayDays) || 0)} days`).run(); }
 }

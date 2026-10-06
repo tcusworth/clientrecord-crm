@@ -25,6 +25,13 @@ assert.equal(sqlite.prepare("SELECT last_name FROM contacts WHERE id=?").get(ada
 assert.equal(sqlite.prepare("SELECT count(*) AS n FROM automation_enrollments WHERE contact_id=? AND status='Active'").get(ada).n, 1);
 await contacts.updateContact(db, ada, { firstName: "Ada", lastName: "King", email: "ada@example.com", stage: "Customer" });
 assert.equal(sqlite.prepare("SELECT count(*) AS n FROM automation_enrollments WHERE contact_id=?").get(ada).n, 1, "no duplicate enrollment");
+// opt-in (AI path): no re-enrollment when the stage is unchanged, even after the earlier enrollment completed
+sqlite.prepare("UPDATE automation_enrollments SET status='Completed' WHERE contact_id=?").run(ada);
+await contacts.updateContact(db, ada, { firstName: "Ada", lastName: "King", email: "ada@example.com", stage: "Customer" }, [], { enrollOnlyOnStageChange: true });
+assert.equal(sqlite.prepare("SELECT count(*) AS n FROM automation_enrollments WHERE contact_id=?").get(ada).n, 1, "unchanged stage with the flag does not re-enroll");
+await contacts.updateContact(db, ada, { firstName: "Ada", lastName: "King", email: "ada@example.com", stage: "Lead" }, [], { enrollOnlyOnStageChange: true });
+await contacts.updateContact(db, ada, { firstName: "Ada", lastName: "King", email: "ada@example.com", stage: "Customer" }, [], { enrollOnlyOnStageChange: true });
+assert.equal(sqlite.prepare("SELECT count(*) AS n FROM automation_enrollments WHERE contact_id=? AND status='Active'").get(ada).n, 1, "a real stage change with the flag still enrolls");
 await assert.rejects(contacts.updateContact(db, 999999, { firstName: "X", lastName: "Y", email: "x@example.com" }), e => e.status === 404);
 
 // activity + tasks
