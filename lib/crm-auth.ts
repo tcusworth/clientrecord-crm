@@ -40,6 +40,15 @@ function parsePermissions(value: unknown, role: CRMRole) {
   catch { return rolePermissions[role]; }
 }
 
+// Resolves a person by email to their CURRENT role/permissions (owner via CRM_ALLOWED_EMAILS, else an active team member).
+export async function userByEmail(rawEmail: string, id?: string): Promise<CRMUser | null> {
+  const email = String(rawEmail || "").trim().toLowerCase(); if (!email) return null;
+  const owners = String(env.CRM_ALLOWED_EMAILS || DEFAULT_OWNER_EMAIL).toLowerCase().split(",").map(v => v.trim()).filter(Boolean);
+  if (owners.includes(email)) return { id: id || email, email, role: "owner", permissions: rolePermissions.owner };
+  const member = await env.DB.prepare("SELECT role,permissions FROM team_members WHERE lower(email)=? AND active=1").bind(email).first<{ role: CRMRole; permissions: string }>();
+  return member ? { id: id || email, email, role: member.role, permissions: parsePermissions(member.permissions, member.role) } : null;
+}
+
 export async function crmUser(request: Request): Promise<CRMUser | null> {
   // Local preview bypass only under the Vite dev server: @cloudflare/vite-plugin statically replaces
   // process.env.NODE_ENV in worker code ("production" for `vite build`), so this is dead code in deployed builds.
@@ -60,10 +69,7 @@ export async function crmUser(request: Request): Promise<CRMUser | null> {
     email = request.headers.get("oai-authenticated-user-email")?.trim().toLowerCase();
   }
   if (!id || !email) return null;
-  const owners = String(env.CRM_ALLOWED_EMAILS || DEFAULT_OWNER_EMAIL).toLowerCase().split(",").map(v => v.trim()).filter(Boolean);
-  if (owners.includes(email)) return { id, email, role: "owner", permissions: rolePermissions.owner };
-  const member = await env.DB.prepare("SELECT role,permissions FROM team_members WHERE lower(email)=? AND active=1").bind(email).first<{ role: CRMRole; permissions: string }>();
-  return member ? { id, email, role: member.role, permissions: parsePermissions(member.permissions, member.role) } : null;
+  return userByEmail(email, id);
 }
 
 export function canEdit(role: CRMRole) { return role === "owner" || role === "admin" || role === "editor"; }
