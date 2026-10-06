@@ -12,7 +12,7 @@
   "observability": { "enabled": true },
   "limits": { "cpu_ms": 30000 },
   "d1_databases": [{ "binding": "DB", "database_name": "clientrecord-crm-db", "database_id": "589469ce-0064-4636-a072-188d33a4f910" }],
-  // The owner creates this namespace during rollout (Task 11) and replaces the placeholder id.
-  "kv_namespaces": [{ "binding": "OAUTH_KV", "id": "00000000000000000000000000000000" }],
+  // Stores OAuth clients, grants and tokens for AI connections (created 2026-10-06).
+  "kv_namespaces": [{ "binding": "OAUTH_KV", "id": "413219fa479a4480b8b25cb328adf752" }],
   "vars": { "CF_ACCESS_TEAM_DOMAIN": "https://tcusworth.cloudflareaccess.com" }
 }
