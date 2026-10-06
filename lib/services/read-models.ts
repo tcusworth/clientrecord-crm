@@ -26,7 +26,7 @@ export async function listDeals(db: D1Database, filter: { q?: string; stage?: st
   if (filter.q?.trim()) { where.push("(d.name LIKE ? ESCAPE '\\' OR d.company LIKE ? ESCAPE '\\')"); binds.push(like(filter.q.trim()), like(filter.q.trim())); }
   if (filter.stage?.trim()) { where.push("lower(d.stage)=lower(?)"); binds.push(filter.stage.trim()); }
   if (filter.owner?.trim()) { where.push("lower(d.owner)=lower(?)"); binds.push(filter.owner.trim()); }
-  if (filter.closingWithinDays) { where.push("d.close_date IS NOT NULL AND date(d.close_date)<=date('now',?)"); binds.push(`+${Math.max(0, Math.min(365, Number(filter.closingWithinDays)))} days`); }
+  if (filter.closingWithinDays) { where.push("d.close_date IS NOT NULL AND date(d.close_date)>=date('now') AND date(d.close_date)<=date('now',?)"); binds.push(`+${Math.max(0, Math.min(365, Number(filter.closingWithinDays)))} days`); }
   if (filter.stalledOnly) { where.push(`d.status='Open' AND ${STALL}>=?`); binds.push(await stallDays(db)); }
   const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
   const [page, count] = await db.batch([db.prepare(`SELECT ${DEAL_COLUMNS} FROM deals d ${clause} ORDER BY d.updated_at DESC, d.id DESC LIMIT ? OFFSET ?`).bind(...binds, limit, offset), db.prepare(`SELECT count(*) AS n FROM deals d ${clause}`).bind(...binds)]);

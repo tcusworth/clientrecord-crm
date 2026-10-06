@@ -103,6 +103,13 @@ assert.deepEqual({ open: summary.byPipeline[0].openValue, weighted: summary.byPi
 assert.equal(summary.openValue, 1000);
 assert.equal(summary.weightedForecast, 600, "1000 x 60%");
 assert.ok(summary.stalled.some(r => r.id === open.id));
+// closingWithinDays: today..today+N only, never past close dates
+const isoDay = offset => new Date(Date.now() + offset * 86400000).toISOString().slice(0, 10);
+const closing = {};
+for (const [label, offset] of [["past", -3], ["today", 0], ["soon", 5], ["far", 40]]) closing[label] = (await deals.saveDeal(db, { name: `Closing ${label}`, owner: "Owner", pipeline_key: "default", stage_key: "Discovery", next_step: "x", close_date: isoDay(offset) }, "owner@example.com")).id;
+const closingIds = (await reads.listDeals(db, { q: "Closing", closingWithinDays: 30 })).rows.map(r => r.id).sort();
+assert.deepEqual(closingIds, [closing.today, closing.soon].sort(), "past-dated and too-far deals excluded");
+for (const id of Object.values(closing)) { sqlite.prepare("DELETE FROM deal_stage_history WHERE deal_id=?").run(id); sqlite.prepare("DELETE FROM deals WHERE id=?").run(id); }
 // pipeline summary keeps same-named stages in different pipelines apart, in each pipeline's own stage order
 sqlite.prepare("INSERT INTO sales_pipelines(id,name,stages,updated_at) VALUES ('csi','CSI pipeline',?,'now')").run(JSON.stringify([{ key: "target", name: "Target", probability: 10, kind: "Open" }, { key: "proposal", name: "Proposal", probability: 50, kind: "Open" }, { key: "won", name: "Won", probability: 100, kind: "Won" }, { key: "lost", name: "Lost", probability: 0, kind: "Lost" }]));
 await deals.saveDeal(db, { name: "CSI proposal", owner: "Owner", pipeline_key: "csi", stage_key: "proposal", next_step: "x", value: 2000 }, "owner@example.com");
