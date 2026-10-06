@@ -88,6 +88,19 @@ assert.equal((await callTool(editor, "update_contact", { id: created.result.id, 
 assert.deepEqual({ ...sqlite.prepare("SELECT stage,phone,location,lead_source,tags,notes,company FROM contacts WHERE id=?").get(created.result.id) }, { stage: "Customer", phone: "555", location: "Paris", lead_source: "Referral", tags: '["a"]', notes: "keep me", company: "Acme" }, "partial contact update keeps lead source, tags and notes");
 assert.equal((await callTool(viewer, "get_company", { id: 999 })).status, 404);
 
+// final fix wave: notes can only be added (add_note), never replaced; unknown keys rejected; strict integer ids
+const companyNotes = sqlite.prepare("SELECT notes FROM companies WHERE id=1").get().notes;
+const viaContact = await callTool(editor, "update_contact", { id: created.result.id, notes: "wiped" });
+assert.deepEqual({ ok: viaContact.ok, status: viaContact.status }, { ok: false, status: 400 }, "update_contact rejects notes");
+const viaCompany = await callTool(editor, "update_company", { id: 1, notes: "wiped" });
+assert.deepEqual({ ok: viaCompany.ok, status: viaCompany.status }, { ok: false, status: 400 }, "update_company rejects notes");
+assert.equal(sqlite.prepare("SELECT notes FROM contacts WHERE id=?").get(created.result.id).notes, "keep me", "contact notes unchanged");
+assert.equal(sqlite.prepare("SELECT notes FROM companies WHERE id=1").get().notes, companyNotes, "company notes unchanged");
+for (const t of TOOLS.filter(t => t.name === "update_contact" || t.name === "update_company")) assert.ok(!("notes" in t.inputSchema.properties), `${t.name} does not advertise notes`);
+assert.equal((await callTool(viewer, "get_contact", { id: 1, surprise: 1 })).status, 400, "unknown keys rejected");
+for (const bad of [true, [1], "1e2", 1.5, 0, "-1"]) assert.equal((await callTool(viewer, "get_contact", { id: bad })).status, 400, `id ${JSON.stringify(bad)}`);
+assert.equal((await callTool(viewer, "get_contact", { id: "1" })).ok, true, "digit strings still accepted");
+
 // sanitize
 assert.deepEqual(sanitize({ a: "b", share_token: "x", apiKeyHash: "y", nested: [{ password: "p", ok: 1 }] }), { a: "b", nested: [{ ok: 1 }] });
 console.log("PASS: MCP tools — catalogue, reads, permissions, writes, audit attribution, sanitising");
