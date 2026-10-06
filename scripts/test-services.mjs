@@ -97,9 +97,24 @@ assert.equal((await reads.listDeals(db, { q: "open o" })).total, 1);
 assert.equal((await reads.listDeals(db, { q: "%" })).total, 0, "LIKE wildcards are escaped");
 assert.ok((await reads.listDeals(db, { stalledOnly: true })).rows.some(r => r.id === open.id));
 const summary = await reads.pipelineSummary(db);
-assert.equal(summary.byStage.find(r => r.stage === "Proposal").value, 1000);
+assert.deepEqual(summary.byPipeline.map(p => p.pipeline), [{ id: "default", name: "New business" }]);
+assert.deepEqual(summary.byPipeline[0].stages, [{ stage: "Proposal", count: 1, value: 1000 }]);
+assert.deepEqual({ open: summary.byPipeline[0].openValue, weighted: summary.byPipeline[0].weightedForecast }, { open: 1000, weighted: 600 });
+assert.equal(summary.openValue, 1000);
 assert.equal(summary.weightedForecast, 600, "1000 x 60%");
 assert.ok(summary.stalled.some(r => r.id === open.id));
+// pipeline summary keeps same-named stages in different pipelines apart, in each pipeline's own stage order
+sqlite.prepare("INSERT INTO sales_pipelines(id,name,stages,updated_at) VALUES ('csi','CSI pipeline',?,'now')").run(JSON.stringify([{ key: "target", name: "Target", probability: 10, kind: "Open" }, { key: "proposal", name: "Proposal", probability: 50, kind: "Open" }, { key: "won", name: "Won", probability: 100, kind: "Won" }, { key: "lost", name: "Lost", probability: 0, kind: "Lost" }]));
+await deals.saveDeal(db, { name: "CSI proposal", owner: "Owner", pipeline_key: "csi", stage_key: "proposal", next_step: "x", value: 2000 }, "owner@example.com");
+await deals.saveDeal(db, { name: "CSI target", owner: "Owner", pipeline_key: "csi", stage_key: "target", next_step: "x", value: 500 }, "owner@example.com");
+sqlite.exec("INSERT INTO deals(name,stage,stage_key,pipeline_key,owner,value,probability,status,created_at,updated_at) VALUES ('Legacy','Legacy','legacy','csi','Owner',300,0,'Open','now','now'),('Orphan','Old stage','old','gone','Owner',700,0,'Open','now','now')");
+const multi = await reads.pipelineSummary(db);
+assert.deepEqual(multi.byPipeline.map(p => ({ ...p.pipeline, openValue: p.openValue, weightedForecast: p.weightedForecast, stages: p.stages })), [
+  { id: "default", name: "New business", openValue: 1000, weightedForecast: 600, stages: [{ stage: "Proposal", count: 1, value: 1000 }] },
+  { id: "csi", name: "CSI pipeline", openValue: 2503, weightedForecast: 1050, stages: [{ stage: "Target", count: 1, value: 500 }, { stage: "Proposal", count: 1, value: 2000 }, { stage: "Legacy", count: 1, value: 3 }] },
+  { id: "gone", name: "gone", openValue: 7, weightedForecast: 0, stages: [{ stage: "Old stage", count: 1, value: 7 }] },
+], "Proposal in two pipelines is not merged");
+assert.deepEqual({ open: multi.openValue, weighted: multi.weightedForecast }, { open: 3510, weighted: 1650 });
 await contacts.createContactTask(db, { contactId: ada, title: "Mine contact past", dueDate: "2026-09-20", owner: "Owner" });
 await contacts.createContactTask(db, { contactId: ada, title: "Other person", dueDate: "2026-09-20", owner: "someone.else@example.com" });
 const soonDeal = await deals.createDealTask(db, { dealId: open.id, title: "Soon deal task", owner: "owner", dueDate: "2026-09-30" });

@@ -29,7 +29,9 @@ assert.equal(deal.result.deal.value, 5000);
 assert.ok(!JSON.stringify(deal).includes("secret-share-token"), "no share tokens");
 assert.equal((await callTool(viewer, "get_deal", { id: 999 })).status, 404);
 assert.equal((await callTool(viewer, "list_deals", { limit: 500 })).result.limit, 25);
-assert.ok((await callTool(viewer, "pipeline_summary", {})).result.byStage.length >= 1);
+const ps = (await callTool(viewer, "pipeline_summary", {})).result;
+assert.deepEqual(ps.byPipeline.map(p => ({ ...p.pipeline, stages: p.stages })), [{ id: "default", name: "New business", stages: [{ stage: "Proposal", count: 1, value: 5000 }] }]);
+assert.equal(ps.openValue, 5000);
 
 // permissions
 const denied = await callTool(viewer, "create_contact", { firstName: "V", lastName: "W", email: "v@example.com" });

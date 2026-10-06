@@ -61,7 +61,7 @@ export const TOOLS: ToolDefinition[] = [
   { name: "list_tasks", description: "List open tasks: mine, overdue, due in the next 7 days, all, or for one contact or deal.", permission: "records.view", annotations: READ,
     inputSchema: S("Filters", { scope: { enum: ["mine", "overdue", "due_soon", "all"] }, contactId: id("Only this contact's tasks"), dealId: id("Only this deal's tasks") }),
     run: async (ctx, a) => listTasks(ctx.db, { scope: oneOf(a, "scope", ["mine", "overdue", "due_soon", "all"] as const, "mine"), owners: [ctx.user.email, await who(ctx)], contactId: int(a, "contactId", false), dealId: int(a, "dealId", false) }) },
-  { name: "pipeline_summary", description: "Open pipeline totals by stage, weighted forecast and stalled deals (dollars).", permission: "records.view", annotations: READ,
+  { name: "pipeline_summary", description: "Open pipeline totals per pipeline (each pipeline's stages in its own order, with open value and weighted forecast), overall totals and stalled deals (dollars).", permission: "records.view", annotations: READ,
     inputSchema: S("No inputs", {}), run: async ctx => pipelineSummary(ctx.db) },
 
   { name: "create_contact", description: "Create a contact. Fails if the email already exists. Suppressed emails stay unsubscribed.", permission: "records.edit", annotations: WRITE,

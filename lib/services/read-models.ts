@@ -1,3 +1,5 @@
+import { pipelines } from "@/lib/services/deals";
+
 type Row = Record<string, unknown>;
 const cap = (n: unknown, max = 25, fallback = 25) => Math.max(1, Math.min(max, Number(n) || fallback));
 const like = (v: string) => `%${v.replace(/[\\%_]/g, c => "\\" + c)}%`;
@@ -49,13 +51,22 @@ export async function listTasks(db: D1Database, filter: { scope: "mine" | "overd
   return { rows };
 }
 
+// Open deals grouped per pipeline (pipelines in pipelines() order, unknown pipeline keys last), stages in that pipeline's own order; stages the pipeline no longer defines are appended by name.
 export async function pipelineSummary(db: D1Database) {
-  const days = await stallDays(db);
-  const [byStage, forecast, stalled] = await db.batch([
-    db.prepare("SELECT stage,count(*) AS count,COALESCE(sum(value),0) AS value FROM deals WHERE status='Open' GROUP BY stage ORDER BY stage"),
-    db.prepare("SELECT COALESCE(sum(value*probability/100.0),0) AS weighted,COALESCE(sum(value),0) AS open FROM deals WHERE status='Open'"),
+  const days = await stallDays(db), known = await pipelines(db);
+  const [groups, stalled] = await db.batch([
+    db.prepare("SELECT COALESCE(NULLIF(pipeline_key,''),'default') AS pipelineKey,COALESCE(NULLIF(stage_key,''),stage) AS stageKey,MAX(stage) AS stage,count(*) AS count,COALESCE(sum(value),0) AS value,COALESCE(sum(value*probability/100.0),0) AS weighted FROM deals WHERE status='Open' GROUP BY 1,2"),
     db.prepare(`SELECT d.id,d.name,d.stage,CAST(${STALL} AS INTEGER) AS days FROM deals d WHERE d.status='Open' AND ${STALL}>=? ORDER BY days DESC LIMIT 20`).bind(days),
   ]);
-  const f = forecast.results[0] as Row;
-  return { byStage: (byStage.results as Row[]).map(r => ({ stage: String(r.stage), count: Number(r.count), value: Number(r.value) / 100 })), weightedForecast: Math.round(Number(f?.weighted || 0)) / 100, openValue: Number(f?.open || 0) / 100, stalled: (stalled.results as Row[]).map(r => ({ id: Number(r.id), name: String(r.name), stage: String(r.stage), days: Number(r.days) })), stallDays: days };
+  const rows = groups.results as Row[], rank = (key: string) => { const i = known.findIndex(p => p.id === key); return i < 0 ? known.length : i; };
+  const byPipeline = [...new Set(rows.map(r => String(r.pipelineKey)))].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b)).map(key => {
+    const pipe = known.find(p => p.id === key), stages = new Map<string, { order: number; stage: string; count: number; value: number }>(); let open = 0, weighted = 0;
+    for (const r of rows.filter(r => String(r.pipelineKey) === key)) {
+      const k = String(r.stageKey).toLowerCase(), i = pipe ? pipe.stages.findIndex(s => s.key.toLowerCase() === k || s.name.toLowerCase() === k) : -1, name = i < 0 ? String(r.stage) : pipe!.stages[i].name, prev = stages.get(name);
+      stages.set(name, { order: i < 0 ? Number.MAX_SAFE_INTEGER : i, stage: name, count: (prev?.count || 0) + Number(r.count), value: (prev?.value || 0) + Number(r.value) }); open += Number(r.value); weighted += Number(r.weighted);
+    }
+    return { pipeline: { id: key, name: pipe?.name || key }, openValue: open / 100, weightedForecast: Math.round(weighted) / 100, stages: [...stages.values()].sort((a, b) => a.order - b.order || a.stage.localeCompare(b.stage)).map(({ stage, count, value }) => ({ stage, count, value: value / 100 })) };
+  });
+  const total = (col: string) => rows.reduce((t, r) => t + Number(r[col]), 0);
+  return { byPipeline, openValue: total("value") / 100, weightedForecast: Math.round(total("weighted")) / 100, stalled: (stalled.results as Row[]).map(r => ({ id: Number(r.id), name: String(r.name), stage: String(r.stage), days: Number(r.days) })), stallDays: days };
 }
