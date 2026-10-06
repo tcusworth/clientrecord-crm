@@ -98,14 +98,15 @@ Machine clients use scoped API keys (`Authorization: Bearer cr_live_…`), creat
 - Local: `pnpm db:migrate:local`, put `DEV_AUTHORIZE_AS=<owner email>` in `mcp/.dev.vars`, run `pnpm --filter clientrecord-mcp dev` (port 8788), then `node mcp/scripts/e2e.mjs`. Local OAuth metadata advertises `http://localhost` without a port, so real MCP clients cannot complete OAuth against `wrangler dev`; use the e2e script locally and test real clients after deploying. Never set `DEV_AUTHORIZE_AS` in production.
 
 **Rollout (owner):**
-1. `cd mcp && pnpm exec wrangler kv namespace create OAUTH_KV`, put the printed `id` into `mcp/wrangler.jsonc` and commit.
+1. Before this branch is merged and deployed: `cd mcp && pnpm exec wrangler kv namespace create OAUTH_KV`, put the printed `id` into `mcp/wrangler.jsonc` and commit it (the committed id is an all-zero placeholder, so deploying without this step cannot work).
 2. Cloudflare Zero Trust, Access applications: add `mcp.clientrecordcrm.com` with paths `authorize` and `connections` to the "ClientRecord CRM" application; add `mcp.clientrecordcrm.com` with paths `mcp`, `token`, `register`, `.well-known` to the "ClientRecord public pages" (Bypass) application.
 3. `pnpm run deploy` (deploys both Workers; the `mcp.clientrecordcrm.com` custom domain is created automatically).
-4. Secrets on the MCP Worker: `pnpm exec wrangler secret put CF_ACCESS_AUD --name clientrecord-mcp` (same AUD as the CRM's Access application). `CRM_TOKEN_ENCRYPTION_KEY` must match the CRM Worker's value for webhooks fired by AI changes to be signed. The CRM Worker's value cannot be read back: if you still have it, set the same value on `clientrecord-mcp`; otherwise AI changes still save and are audited, but outgoing webhooks from AI changes will not be delivered until a key is shared (rotating the CRM's key would break existing encrypted integration tokens and webhook secrets).
+4. Secrets on the MCP Worker: `pnpm exec wrangler secret put CF_ACCESS_AUD --name clientrecord-mcp` (same AUD as the CRM's Access application). `CRM_TOKEN_ENCRYPTION_KEY` must match the CRM Worker's value so the MCP Worker can decrypt the stored webhook secret and webhooks can be sent for AI changes. The CRM Worker's value cannot be read back: if you still have it, set the same value with `pnpm exec wrangler secret put CRM_TOKEN_ENCRYPTION_KEY --name clientrecord-mcp`; otherwise AI changes still save and are audited, but outgoing webhooks from AI changes will not be delivered until a key is shared (rotating the CRM's key would break existing encrypted integration tokens and webhook secrets). If `CRM_ALLOWED_EMAILS` is ever set on the CRM Worker, set the same value on `clientrecord-mcp`.
 5. Connect your tools and sign in, then manage them at `/connections`:
    - Claude (claude.ai / app): Settings → Connectors → Add custom connector → `https://mcp.clientrecordcrm.com/mcp`.
    - Claude Code: `claude mcp add --transport http clientrecord https://mcp.clientrecordcrm.com/mcp`, then `/mcp` to sign in.
    - ChatGPT: Settings → Connectors / developer mode → MCP server URL `https://mcp.clientrecordcrm.com/mcp`, authentication OAuth.
+6. Smoke check after connecting: ask the tool "What's in my pipeline?", then have it add a note to a test contact and confirm the CRM audit log shows that change with `via: "mcp"`.
 
 ## Data export & migration
 
