@@ -101,6 +101,22 @@ assert.equal((await callTool(viewer, "get_contact", { id: 1, surprise: 1 })).sta
 for (const bad of [true, [1], "1e2", 1.5, 0, "-1"]) assert.equal((await callTool(viewer, "get_contact", { id: bad })).status, 400, `id ${JSON.stringify(bad)}`);
 assert.equal((await callTool(viewer, "get_contact", { id: "1" })).ok, true, "digit strings still accepted");
 
+// follow-ups A1: create_deal picks a pipeline (first saved by rowid when omitted) and matches stage within it
+const stages = (...names) => JSON.stringify([...names.map((n, i) => ({ key: n.toLowerCase(), name: n, probability: 10 * (i + 1), kind: "Open" })), { key: "won", name: "Won", probability: 100, kind: "Won" }, { key: "lost", name: "Lost", probability: 0, kind: "Lost" }]);
+sqlite.prepare("INSERT INTO sales_pipelines(id,name,stages,updated_at) VALUES (?,?,?,'now')").run("csi", "CSI pipeline", stages("Target", "Proposal"));
+sqlite.prepare("INSERT INTO sales_pipelines(id,name,stages,updated_at) VALUES (?,?,?,'now')").run("aard", "Aardvark pipeline", stages("Intro"));
+const firstSaved = await callTool(owner, "create_deal", { name: "CSI deal", nextStep: "Call" });
+assert.deepEqual({ ...firstSaved.result, id: undefined }, { id: undefined, pipeline: "CSI pipeline", stage: "Target" }, "omitted pipeline = first saved pipeline by rowid, first open stage");
+assert.deepEqual({ ...sqlite.prepare("SELECT pipeline_key,stage_key FROM deals WHERE id=?").get(firstSaved.result.id) }, { pipeline_key: "csi", stage_key: "target" });
+const named = await callTool(owner, "create_deal", { name: "NB deal", nextStep: "Call", pipeline: "new BUSINESS", stage: "discovery" });
+assert.deepEqual({ pipeline: named.result.pipeline, stage: named.result.stage }, { pipeline: "New business", stage: "Discovery" }, "pipeline by name, case-insensitive");
+const byId = await callTool(owner, "create_deal", { name: "Aard deal", nextStep: "Call", pipeline: "AARD" });
+assert.deepEqual({ pipeline: byId.result.pipeline, stage: byId.result.stage }, { pipeline: "Aardvark pipeline", stage: "Intro" }, "pipeline by id");
+const badPipe = await callTool(owner, "create_deal", { name: "X", nextStep: "Call", pipeline: "Nope" });
+assert.equal(badPipe.status, 400); assert.ok(/CSI pipeline/.test(badPipe.error) && /New business/.test(badPipe.error) && /Aardvark pipeline/.test(badPipe.error), badPipe.error);
+const badStage = await callTool(owner, "create_deal", { name: "X", nextStep: "Call", pipeline: "csi", stage: "Qualified" });
+assert.equal(badStage.status, 400); assert.equal(badStage.error, "Unknown stage. Stages: Target, Proposal, Won, Lost.");
+
 // sanitize
 assert.deepEqual(sanitize({ a: "b", share_token: "x", apiKeyHash: "y", nested: [{ password: "p", ok: 1 }] }), { a: "b", nested: [{ ok: 1 }] });
 console.log("PASS: MCP tools — catalogue, reads, permissions, writes, audit attribution, sanitising");
