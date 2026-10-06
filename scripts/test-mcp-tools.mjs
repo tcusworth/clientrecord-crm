@@ -119,6 +119,11 @@ assert.equal(badPipe.status, 400); assert.ok(/CSI pipeline/.test(badPipe.error) 
 const badStage = await callTool(owner, "create_deal", { name: "X", nextStep: "Call", pipeline: "csi", stage: "Qualified" });
 assert.equal(badStage.status, 400); assert.equal(badStage.error, "Unknown stage. Stages: Target, Proposal, Won, Lost.");
 
+// A4: update_contact to another contact's email is a 409, not a 500
+const dupEmail = await callTool(editor, "update_contact", { id: created.result.id, email: "ADA@example.com" });
+assert.deepEqual({ ok: dupEmail.ok, status: dupEmail.status, error: dupEmail.error }, { ok: false, status: 409, error: "A contact with that email already exists." });
+assert.equal((await callTool(editor, "update_contact", { id: created.result.id, email: "Grace@Example.com" })).ok, true, "own email (any case) is fine");
+
 // sanitize
 assert.deepEqual(sanitize({ a: "b", share_token: "x", apiKeyHash: "y", nested: [{ password: "p", ok: 1 }] }), { a: "b", nested: [{ ok: 1 }] });
 console.log("PASS: MCP tools — catalogue, reads, permissions, writes, audit attribution, sanitising");
