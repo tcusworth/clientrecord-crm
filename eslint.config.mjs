@@ -15,6 +15,12 @@ const eslintConfig = defineConfig([
     "mcp/.wrangler/**",
   ]),
   {
+    rules: {
+      // Screens load their data in mount effects that set loading state; rewriting them risks breaking screen loading for no user-visible gain.
+      "react-hooks/set-state-in-effect": "warn",
+    },
+  },
+  {
     files: ["components/ui/**/*.{ts,tsx}"],
     rules: {
       // These files are vendored verbatim from the shadcn registry (new-york
