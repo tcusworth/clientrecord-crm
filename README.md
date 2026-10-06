@@ -88,6 +88,25 @@ With `CF_ACCESS_ENFORCED=true` and `CF_ACCESS_AUD` missing or wrong, every signe
 
 Machine clients use scoped API keys (`Authorization: Bearer cr_live_…`), created in the app and stored only as SHA-256 hashes. Scopes: `records.read`, `records.write`, `leads.capture`, `inbox.capture`, `meetings.import`, `jobs.run`, `backups.export`, or `*`. Only owners can create `*` and `backups.export` keys, and `*` does not grant `backups.export`. The OpenAPI 3.1 description of the public API (`/api/v1/records`, Meetily import, scheduled jobs via `/api/operations`) is served at `GET /api/openapi`.
 
+### AI tools (MCP server)
+
+`mcp/` is a second Worker, `clientrecord-mcp`, served at `https://mcp.clientrecordcrm.com/mcp`. It lets Claude, Claude Code/Desktop and ChatGPT read the CRM and make safe changes (create/update contacts, companies and deals; notes, activities and tasks) as the signed-in person, with that person's current permissions. It cannot delete, merge, bulk-edit, send email, see documents or change settings.
+
+- Sign-in: OAuth (`@cloudflare/workers-oauth-provider`); the consent page (`/authorize`) and `/connections` sit behind Cloudflare Access.
+- Manage or disconnect connected tools: `https://mcp.clientrecordcrm.com/connections`.
+- Audit: every AI change is written to the audit log with action `mcp.<tool>` and `via: "mcp"`. Webhook subscribers listening for CRM action names (e.g. `createContact`) do not receive MCP-made changes unless they subscribe to `*` or the `mcp.*` names.
+- Local: `pnpm db:migrate:local`, put `DEV_AUTHORIZE_AS=<owner email>` in `mcp/.dev.vars`, run `pnpm --filter clientrecord-mcp dev` (port 8788), then `node mcp/scripts/e2e.mjs`. Local OAuth metadata advertises `http://localhost` without a port, so real MCP clients cannot complete OAuth against `wrangler dev`; use the e2e script locally and test real clients after deploying. Never set `DEV_AUTHORIZE_AS` in production.
+
+**Rollout (owner):**
+1. `cd mcp && pnpm exec wrangler kv namespace create OAUTH_KV`, put the printed `id` into `mcp/wrangler.jsonc` and commit.
+2. Cloudflare Zero Trust, Access applications: add `mcp.clientrecordcrm.com` with paths `authorize` and `connections` to the "ClientRecord CRM" application; add `mcp.clientrecordcrm.com` with paths `mcp`, `token`, `register`, `.well-known` to the "ClientRecord public pages" (Bypass) application.
+3. `pnpm run deploy` (deploys both Workers; the `mcp.clientrecordcrm.com` custom domain is created automatically).
+4. Secrets on the MCP Worker: `pnpm exec wrangler secret put CF_ACCESS_AUD --name clientrecord-mcp` (same AUD as the CRM's Access application). `CRM_TOKEN_ENCRYPTION_KEY` must match the CRM Worker's value for webhooks fired by AI changes to be signed. The CRM Worker's value cannot be read back: if you still have it, set the same value on `clientrecord-mcp`; otherwise AI changes still save and are audited, but outgoing webhooks from AI changes will not be delivered until a key is shared (rotating the CRM's key would break existing encrypted integration tokens and webhook secrets).
+5. Connect your tools and sign in, then manage them at `/connections`:
+   - Claude (claude.ai / app): Settings → Connectors → Add custom connector → `https://mcp.clientrecordcrm.com/mcp`.
+   - Claude Code: `claude mcp add --transport http clientrecord https://mcp.clientrecordcrm.com/mcp`, then `/mcp` to sign in.
+   - ChatGPT: Settings → Connectors / developer mode → MCP server URL `https://mcp.clientrecordcrm.com/mcp`, authentication OAuth.
+
 ## Data export & migration
 
 > **Moving from a site that predates `/api/backup-export`?** Download `/api/export?type=backup` (one JSON file) as the owner, download each document into a folder, then convert both into the import layout: `node scripts/convert-legacy-backup.mjs --backup ./migration-export/crm-account-backup.json --documents ./migration-export/documents --out ./migration-export/converted`. Files are matched to their records by SHA-256, so their names don't matter. Then run the import step below with `--in ./migration-export/converted`. That backup leaves out a few newer areas (customer success, partners, service cases, custom objects, field captures, QuickBooks invoices, portal access, API keys); check they're empty or re-create them.

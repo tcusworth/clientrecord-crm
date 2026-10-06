@@ -9,10 +9,11 @@
     "dev": "vinext dev",
     "build": "vinext build",
     "start": "wrangler dev --config dist/server/wrangler.json --local --persist-to .wrangler/state --ip 127.0.0.1",
-    "deploy": "pnpm run build && wrangler d1 migrations apply DB --remote --config wrangler.jsonc && wrangler deploy",
+    "deploy": "pnpm run build && wrangler d1 migrations apply DB --remote --config wrangler.jsonc && wrangler deploy && pnpm --filter clientrecord-mcp run deploy",
+    "deploy:mcp": "pnpm --filter clientrecord-mcp run deploy",
     "db:migrate:local": "wrangler d1 migrations apply DB --local --config wrangler.jsonc",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern .worktrees",
-    "typecheck": "tsc --noEmit -p .",
+    "typecheck": "tsc --noEmit -p . && pnpm --filter clientrecord-mcp typecheck",
     "test": "node scripts/run-tests.mjs",
     "db:generate": "drizzle-kit generate"
   },
