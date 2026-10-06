@@ -33,14 +33,15 @@ export async function listDeals(db: D1Database, filter: { q?: string; stage?: st
 
 export async function listTasks(db: D1Database, filter: { scope: "mine" | "overdue" | "due_soon" | "all"; owners?: string[]; contactId?: number; dealId?: number; limit?: number; today?: string }) {
   const today = filter.today || new Date().toISOString().slice(0, 10), limit = cap(filter.limit), owners = (filter.owners || []).map(o => o.toLowerCase());
+  if (filter.scope !== "all" && !owners.length) return { rows: [] };
   const conditions = (alias: string, dueCol: string, doneCol: string) => {
     const parts = [`${alias}.${doneCol}=0`], binds: (string | number)[] = [];
-    if (filter.scope !== "all" && owners.length) { parts.push(`lower(${alias}.owner) IN (${owners.map(() => "?").join(",")})`); binds.push(...owners); }
+    if (filter.scope !== "all") { parts.push(`lower(${alias}.owner) IN (${owners.map(() => "?").join(",")})`); binds.push(...owners); }
     if (filter.scope === "overdue") { parts.push(`${alias}.${dueCol}<?`); binds.push(today); }
     if (filter.scope === "due_soon") { parts.push(`${alias}.${dueCol}>=? AND ${alias}.${dueCol}<=date(?, '+7 days')`); binds.push(today, today); }
     return { sql: parts.join(" AND "), binds };
   };
-  const c = conditions("t", "due_date", "completed"), d = conditions("t", "due_date", "completed");
+  const c = conditions("t", "due_date", "completed"), d = c;
   const contactPart = filter.dealId ? null : db.prepare(`SELECT 'contact' AS kind,t.id,t.title,t.owner,t.due_date AS dueDate,t.completed,t.contact_id AS contactId,NULL AS dealId,c.first_name||' '||c.last_name AS recordName FROM tasks t JOIN contacts c ON c.id=t.contact_id WHERE ${c.sql}${filter.contactId ? " AND t.contact_id=?" : ""} ORDER BY t.due_date LIMIT ?`).bind(...c.binds, ...(filter.contactId ? [filter.contactId] : []), limit);
   const dealPart = filter.contactId ? null : db.prepare(`SELECT 'deal' AS kind,t.id,t.title,t.owner,t.due_date AS dueDate,t.completed,NULL AS contactId,t.deal_id AS dealId,x.name AS recordName FROM deal_tasks t JOIN deals x ON x.id=t.deal_id WHERE ${d.sql}${filter.dealId ? " AND t.deal_id=?" : ""} ORDER BY t.due_date LIMIT ?`).bind(...d.binds, ...(filter.dealId ? [filter.dealId] : []), limit);
   const results = await db.batch([contactPart, dealPart].filter(Boolean) as D1PreparedStatement[]);
