@@ -1,3 +1,6 @@
+packages:
+  - "."
+  - "mcp"
 # Supply-chain policy: minimum release age for new versions and an explicit allowlist for dependency build scripts.
 minimumReleaseAge: 10080
 minimumReleaseAgeIgnoreMissingTime: false

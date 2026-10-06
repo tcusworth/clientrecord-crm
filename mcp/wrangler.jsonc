@@ -1,0 +1,18 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "clientrecord-mcp",
+  "account_id": "87c67bb166f67a7ee2d751d04ed1fcb5",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-05-15",
+  "compatibility_flags": ["nodejs_compat"],
+  // Only the custom domain: the consent pages sit behind Cloudflare Access; /mcp and the OAuth endpoints are token-protected.
+  "routes": [{ "pattern": "mcp.clientrecordcrm.com", "custom_domain": true }],
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": { "enabled": true },
+  "limits": { "cpu_ms": 30000 },
+  "d1_databases": [{ "binding": "DB", "database_name": "clientrecord-crm-db", "database_id": "589469ce-0064-4636-a072-188d33a4f910" }],
+  // The owner creates this namespace during rollout (Task 11) and replaces the placeholder id.
+  "kv_namespaces": [{ "binding": "OAUTH_KV", "id": "00000000000000000000000000000000" }],
+  "vars": { "CF_ACCESS_TEAM_DOMAIN": "https://tcusworth.cloudflareaccess.com" }
+}

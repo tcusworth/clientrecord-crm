@@ -53,3 +53,5 @@ next-env.d.ts
 
 # data exports (scripts/export-from-live.mjs) contain all CRM data
 /migration-export/
+/mcp/.wrangler/
+/mcp/node_modules/
