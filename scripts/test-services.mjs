@@ -38,3 +38,19 @@ assert.equal(sqlite.prepare("SELECT completed,status FROM tasks WHERE id=?").get
 assert.equal(await contacts.completeContactTask(db, 999999), false);
 await assert.rejects(contacts.createContactTask(db, { contactId: ada, title: "x", dueDate: "not-a-date", owner: "o" }), e => e.status === 400);
 console.log("PASS: contact services");
+
+const companies = load("lib/services/companies.ts");
+await assert.rejects(companies.saveCompany(db, { name: "Acme", owner: "not-an-email" }, "owner@example.com"), e => e.status === 400 && /email address/.test(e.message));
+await assert.rejects(companies.saveCompany(db, { name: "Acme", owner: "o@example.com", website: "acme.com" }, "owner@example.com"), e => /https/.test(e.message));
+await assert.rejects(companies.saveCompany(db, { name: "Acme", owner: "o@example.com", fit_score: 40 }, "owner@example.com"), e => /fit score/i.test(e.message));
+const acme = await companies.saveCompany(db, { name: "Acme", owner: "O@Example.com", website: "https://www.acme.com/", domain: "https://www.acme.com/", tags: ["a", "b"] }, "owner@example.com", "2026-09-27T10:00:00.000Z");
+assert.equal(acme.before, null);
+const acmeRow = sqlite.prepare("SELECT owner,domain,tags,temperature FROM companies WHERE id=?").get(acme.id);
+assert.deepEqual({ ...acmeRow }, { owner: "o@example.com", domain: "acme.com", tags: '["a","b"]', temperature: "Cold" });
+const again = await companies.saveCompany(db, { name: "Acme", owner: "o@example.com", stage: "Customer" }, "owner@example.com");
+assert.equal(again.id, acme.id); assert.equal(again.before.name, "Acme");
+await companies.appendCompanyNote(db, acme.id, "Signed MSA", "Owner", "2026-09-27T10:00:00.000Z");
+await companies.appendCompanyNote(db, acme.id, "Kickoff booked", "Owner", "2026-09-28T09:00:00.000Z");
+assert.equal(sqlite.prepare("SELECT notes FROM companies WHERE id=?").get(acme.id).notes, "[2026-09-27 Owner] Signed MSA\n[2026-09-28 Owner] Kickoff booked");
+await assert.rejects(companies.appendCompanyNote(db, 999999, "x", "o"), e => e.status === 404);
+console.log("PASS: company services");

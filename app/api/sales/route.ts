@@ -1,6 +1,8 @@
 import { env } from "cloudflare:workers";
 import { audit, can, canAdmin, crmUser } from "@/lib/crm-auth";
 import { defaultPipeline, relationshipRoles, signalPoints, validateStages, type Pipeline } from "@/lib/sales-rules";
+import { recalculateCompany, saveCompany } from "@/lib/services/companies";
+import { ServiceError } from "@/lib/services/errors";
 import { chooseCompanyDomain, enrichCompanyApollo, enrichCompanyWebsite, normalizedCompanyDomain } from "@/lib/company-enrichment";
 
 type Row=Record<string,unknown>;
@@ -29,16 +31,6 @@ async function customFieldValues(body:Row,entityType:"company"){
     values.push({id,value});
   }
   return values;
-}
-// Each recalculation runs in the same transaction as its source edit.
-function recalculate(id:number|string,actor:string){
-  const selector=typeof id==="number"?"id=?":"name=?";
-  const intent="MAX(0,MIN(100,COALESCE((SELECT SUM(points) FROM account_signals WHERE company_id=companies.id AND active=1),0)))";
-  const temperature="CASE WHEN "+intent+">=60 AND fit_score>=50 THEN 'Hot' WHEN "+intent+">=20 THEN 'Lukewarm' ELSE 'Cold' END";
-  return [
-    db().prepare("INSERT INTO qualification_alerts(company_id,owner,message,created_at) SELECT id,CASE WHEN owner='' THEN ? ELSE owner END,name||': '||temperature||' → '||("+temperature+"),? FROM companies WHERE "+selector+" AND temperature<>("+temperature+")").bind(actor,new Date().toISOString(),id),
-    db().prepare("UPDATE companies SET intent_score="+intent+",temperature="+temperature+" WHERE "+selector).bind(id),
-  ];
 }
 export async function GET(request:Request){
   const user=await crmUser(request);if(!user)return Response.json({error:"Sign in is required."},{status:401});
@@ -122,20 +114,9 @@ export async function POST(request:Request){
       ]);await audit(user,action,"sales",String(id),action,{before,after:{retained:"Contacts, deals, documents and historical activity were unlinked."}});
       return Response.json({ok:true});
     }else if(action==="saveAccount"){
-      const name=requireText(b.name,"Company name"),owner=requireText(b.owner,"Owner email").toLowerCase(),fit=number(b.fit_score);
-      if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(owner))throw new Error("Use an email address for the account owner.");
-      if(str(b.website)&&!/^https?:\/\//i.test(str(b.website)))throw new Error("Website must start with https:// or http://.");
-      if(fit>0&&!str(b.fit_reason))throw new Error("Explain the fit score so qualification remains transparent.");
-      const before=await db().prepare("SELECT * FROM companies WHERE name=?").bind(name).first<Row>();
       const fieldValues=await customFieldValues(b,"company");
-      const tags=JSON.stringify(str(b.tags).split(",").map(s=>s.trim()).filter(Boolean).slice(0,30));
-      const result=await db().batch([
-        db().prepare("INSERT INTO companies(name,stage,notes,updated_at,website,domain,industry,tier,territory,owner,tags,fit_score,fit_reason,summary,headquarters,linkedin_url,logo_url,employee_range) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(name) DO UPDATE SET stage=excluded.stage,notes=excluded.notes,updated_at=excluded.updated_at,website=excluded.website,domain=excluded.domain,industry=excluded.industry,tier=excluded.tier,territory=excluded.territory,owner=excluded.owner,tags=excluded.tags,fit_score=excluded.fit_score,fit_reason=excluded.fit_reason,summary=excluded.summary,headquarters=excluded.headquarters,linkedin_url=excluded.linkedin_url,logo_url=excluded.logo_url,employee_range=excluded.employee_range")
-          .bind(name,str(b.stage)||"Prospect",str(b.notes),now,str(b.website),str(b.domain).toLowerCase().replace(/^https?:\/\//,"").replace(/^www\./,"").replace(/\/$/,""),str(b.industry),str(b.tier),str(b.territory),owner,tags,fit,str(b.fit_reason),str(b.summary),str(b.headquarters),str(b.linkedin_url),str(b.logo_url),str(b.employee_range)),
-        ...(Object.hasOwn(b,"primary_contact_id")?[db().prepare("UPDATE companies SET primary_contact_id=? WHERE name=?").bind(b.primary_contact_id?number(b.primary_contact_id,1,1e12):null,name)]:[]),
-        ...recalculate(name,user.email),
-      ]);await audit(user,action,"sales",name,action,{before,after:b});
-      const id=before?Number(before.id):Number(result[0].meta.last_row_id);
+      const {id,before}=await saveCompany(db(),{name:str(b.name),owner:str(b.owner),stage:str(b.stage),notes:str(b.notes),website:str(b.website),domain:str(b.domain),industry:str(b.industry),tier:str(b.tier),territory:str(b.territory),tags:str(b.tags).split(","),fit_score:Number(b.fit_score),fit_reason:str(b.fit_reason),summary:str(b.summary),headquarters:str(b.headquarters),linkedin_url:str(b.linkedin_url),logo_url:str(b.logo_url),employee_range:str(b.employee_range),...(Object.hasOwn(b,"primary_contact_id")?{primary_contact_id:b.primary_contact_id?number(b.primary_contact_id,1,1e12):null}:{})},user.email,now);
+      await audit(user,action,"sales",str(b.name),action,{before,after:b});
       if(fieldValues.length){
         const changes=fieldValues.flatMap(field=>[
           db().prepare("DELETE FROM custom_field_values WHERE definition_id=? AND entity_type='company' AND entity_id=?").bind(field.id,id),
@@ -169,7 +150,7 @@ export async function POST(request:Request){
         company=Number((before as Row).company_id);
         mutation=db().prepare("UPDATE account_signals SET active=0 WHERE id=?").bind(str(b.id));
       }
-      await db().batch([mutation,...recalculate(company,user.email)]);await audit(user,action,"sales",String(company),action,{before,after:b});
+      await db().batch([mutation,...recalculateCompany(db(),company,user.email)]);await audit(user,action,"sales",String(company),action,{before,after:b});
     }else if(action==="readAlert"){
       await db().prepare("UPDATE qualification_alerts SET read_at=? WHERE id=? AND (owner=? OR ?=1)").bind(now,number(b.id,1,1e12),user.email,canAdmin(user.role)?1:0).run();
     }else if(action==="savePipeline"){
@@ -226,6 +207,7 @@ export async function POST(request:Request){
     }else throw new Error("Unknown sales action.");
     return Response.json({ok:true});
   }catch(error){
+    if(error instanceof ServiceError)return Response.json({error:error.message},{status:error.status});
     console.error(error);
     const message=error instanceof Error?error.message:"The change could not be saved.";
     return Response.json({error:/D1|SQLITE|constraint/i.test(message)?"The record conflicts with existing data or references a missing record. Refresh and try again.":message},{status:400});
