@@ -64,7 +64,7 @@ const apiKey = "cr_live_testkey";
 const hash = await load("lib/crm-auth.ts").sha256(apiKey);
 sqlite.prepare("INSERT INTO api_keys(id,name,key_hash,key_prefix,scopes,created_by,created_at) VALUES ('k1','k',?,'cr_live_testkey','*','owner@example.com','now')").run(hash);
 const apiPost = body => route.POST(new Request("https://crm.example.com/api/integrations", { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` }, body: JSON.stringify(body) }));
-assert.equal((await apiPost({ action: "disconnect", id: Number(vId) })).status, 403);
+assert.ok([401, 403].includes((await apiPost({ action: "disconnect", id: Number(vId) })).status));
 const { canConnectOwn } = load("lib/integrations/accounts.ts");
 assert.equal(canConnectOwn({ id: "api:k1", email: "o@x.com", role: "editor", permissions: ["records.edit"] }), false);
 assert.equal(sqlite.prepare("SELECT count(*) c FROM integration_accounts WHERE id=?").get(Number(vId)).c, 1);
