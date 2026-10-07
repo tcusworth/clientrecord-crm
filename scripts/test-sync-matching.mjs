@@ -59,6 +59,12 @@ INSERT INTO automation_sequences(id,name,created_at,updated_at) VALUES (1,'Seq',
   assert.deepEqual([r.emails, r.reviewQueued], [0, 0], `${provider}: internal mail ignored`);
   assert.deepEqual(ids("sync_records"), []); assert.deepEqual(reviews(), []);
 
+  // Third parties and forwards: a non-contact sender (newsletter, cc'd stranger) or a colleague writing to a mailbox
+  // that also lists a contact is skipped, not logged as the contact's mail, and never queued.
+  r = await run([{ id: "blast", from: "news@vendor.test", to: [OWN, "client@acme.test"] }, { id: "fwd", from: "colleague@csi-automation.com", to: [OWN, "client@acme.test"] }, { id: "tp", from: "stranger@other.test", to: ["client@acme.test"] }]);
+  assert.deepEqual([r.emails, r.reviewQueued], [0, 0], `${provider}: third-party/forwarded mail skipped`);
+  assert.deepEqual(ids("sync_records"), []); assert.deepEqual(reviews(), []);
+
   // Owner writes to an external contact: logged as outbound.
   r = await run([{ id: "out", from: OWN, to: ["client@acme.test"] }]);
   assert.equal(r.emails, 1);
