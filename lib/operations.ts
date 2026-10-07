@@ -6,7 +6,8 @@ import { escapeHtml } from "@/lib/email-templates";
 
 type Row = Record<string, unknown>;
 const json = (value: unknown) => JSON.stringify(value, (key, item) => /token|secret/i.test(key) ? "[redacted]" : item).slice(0, 32000);
-const ownerEmail = () => String(env.CRM_ALLOWED_EMAILS || DEFAULT_OWNER_EMAIL).split(",")[0].trim().toLowerCase();
+// The CRM owner: first CRM_ALLOWED_EMAILS address (DEFAULT_OWNER_EMAIL when unset). Also the actor for scheduled jobs.
+export const ownerEmail = () => String(env.CRM_ALLOWED_EMAILS || DEFAULT_OWNER_EMAIL).split(",")[0].trim().toLowerCase();
 
 export async function systemEvent(severity: "info"|"warning"|"error", category: string, source: string, message: string, details: unknown = {}) {
   try { await env.DB.prepare("INSERT INTO system_events(severity,category,source,message,details,created_at) VALUES (?,?,?,?,?,datetime('now'))").bind(severity,category,source,message,json(details)).run(); }
