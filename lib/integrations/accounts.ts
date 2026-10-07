@@ -35,10 +35,14 @@ export async function needsReconnect(id: number, message: string): Promise<never
 }
 // Sync runs as the mailbox owner; an account whose owner is no longer an active CRM member is flagged instead.
 export async function syncOwner(account: IntegrationAccount) {
-  return await userByEmail(account.user_email) || needsReconnect(account.id, `${account.user_email} is no longer an active CRM member; reconnect required.`);
+  const owner = await userByEmail(account.user_email);
+  if (!owner) return needsReconnect(account.id, `${account.user_email} is no longer an active CRM member; reconnect required.`);
+  if (!canConnectOwn(owner)) return needsReconnect(account.id, `${account.user_email} no longer has edit access; reconnect required.`);
+  return owner;
 }
-// Token endpoint said the grant is gone (invalid_grant) or refused us outright (401).
-export const grantRejected = (error: unknown) => { const e = error as { code?: string; status?: number } | null; return e?.code === "invalid_grant" || e?.status === 401; };
+// Token endpoint said the user's grant is gone (invalid_grant) or needs the user again (Microsoft interaction_required).
+// Other token failures (e.g. 401 invalid_client) are app configuration problems, not the user's to fix.
+export const grantRejected = (error: unknown) => ["invalid_grant", "interaction_required"].includes(String((error as { code?: string } | null)?.code || ""));
 export const unauthorized = (error: unknown) => (error as { status?: number } | null)?.status === 401;
 export async function markSynced(id: number) { await env.DB.prepare("UPDATE integration_accounts SET last_synced_at=datetime('now'),status='connected',updated_at=datetime('now') WHERE id=?").bind(id).run(); }
 

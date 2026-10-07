@@ -87,6 +87,16 @@ INSERT INTO deals(id,name,company,company_id,contact_id,stage,stage_key,pipeline
   tokenReply = () => Response.json({ error: "temporarily_unavailable" }, { status: 503 });
   await assert.rejects(sync(c), (error) => !(error instanceof lib.ReconnectRequired));
   assert.equal((await accounts.accountById(c.id)).status, "connected", `${provider}: transient failure leaves status alone`);
+  // A token-endpoint 401 invalid_client is an app configuration problem: plain error, status unchanged.
+  tokenReply = () => Response.json({ error: "invalid_client", error_description: "Bad client secret." }, { status: 401 });
+  await assert.rejects(sync(c), (error) => !(error instanceof lib.ReconnectRequired), `${provider}: invalid_client is not a reconnect`);
+  assert.equal((await accounts.accountById(c.id)).status, "connected", `${provider}: invalid_client leaves status alone`);
+  if (provider === "microsoft") {
+    tokenReply = () => Response.json({ error: "interaction_required", error_description: "AADSTS50076: MFA required." }, { status: 400 });
+    await assert.rejects(sync(c), (error) => error instanceof lib.ReconnectRequired, "microsoft: interaction_required → ReconnectRequired");
+    assert.equal((await accounts.accountById(c.id)).status, "needs_reconnect");
+    sqlite.prepare("UPDATE integration_accounts SET status='connected' WHERE id=?").run(c.id);
+  }
   // 401 from the provider right after a successful refresh → ReconnectRequired.
   tokenReply = () => Response.json({ access_token: "fresh", expires_in: 3600 });
   apiStatus = 401;
@@ -99,6 +109,12 @@ INSERT INTO deals(id,name,company,company_id,contact_id,stage,stage_key,pipeline
   calls.length = 0;
   await assert.rejects(sync(g), (error) => error instanceof lib.ReconnectRequired);
   assert.equal((await accounts.accountById(g.id)).status, "needs_reconnect"); assert.equal(calls.length, 0);
+
+  // 4b. Mailbox owner downgraded to viewer → flagged, nothing fetched.
+  const v = await addAccount("viewer@example.com");
+  calls.length = 0;
+  await assert.rejects(sync(v), (error) => error instanceof lib.ReconnectRequired && /no longer has edit access/.test(error.message));
+  assert.equal((await accounts.accountById(v.id)).status, "needs_reconnect"); assert.equal(calls.length, 0, `${provider}: viewer owner fetches nothing`);
 
   // 5. POST /api/<provider>/sync syncs only the caller's own account.
   sqlite.prepare("UPDATE integration_accounts SET last_synced_at='2026-01-01 00:00:00' WHERE id IN (?,?)").run(a.id, b.id);
