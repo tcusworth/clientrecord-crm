@@ -12,7 +12,7 @@ const str=(v:unknown)=>typeof v==="string"?v.trim():"";
 const requireText=(v:unknown,label:string)=>{const s=str(v);if(!s||s.length>4000)throw new Error(label+" is required (maximum 4,000 characters).");return s;};
 const number=(v:unknown,min=0,max=100)=>{const n=Number(v);if(!Number.isFinite(n)||n<min||n>max)throw new Error("A numeric value is out of range.");return n;};
 const rows=async(sql:string,...args:(string|number|null)[])=>(await db().prepare(sql).bind(...args).all()).results;
-async function customFieldValues(body:Row,entityType:"company"){
+async function customFieldValues(body:Row,entityType:"company"|"deal"){
   const definitions=await rows("SELECT id,field_type AS fieldType,options FROM custom_field_definitions WHERE entity_type=?",entityType);
   const values:Array<{id:number;value:string}>=[];
   for(const definition of definitions){
@@ -27,6 +27,12 @@ async function customFieldValues(body:Row,entityType:"company"){
     values.push({id,value});
   }
   return values;
+}
+async function saveCustomFieldValues(values:Array<{id:number;value:string}>,entityType:"company"|"deal",entityId:number,now:string){
+  if(values.length)await db().batch(values.flatMap(field=>[
+    db().prepare("DELETE FROM custom_field_values WHERE definition_id=? AND entity_type=? AND entity_id=?").bind(field.id,entityType,entityId),
+    ...(field.value?[db().prepare("INSERT INTO custom_field_values(definition_id,entity_type,entity_id,value,updated_at) VALUES (?,?,?,?,?)").bind(field.id,entityType,entityId,field.value,now)]:[]),
+  ]));
 }
 export async function GET(request:Request){
   const user=await crmUser(request);if(!user)return Response.json({error:"Sign in is required."},{status:401});
@@ -53,8 +59,8 @@ export async function GET(request:Request){
       rows("SELECT * FROM account_signals ORDER BY occurred_at DESC"),
       canAdmin(user.role)?rows("SELECT * FROM qualification_alerts ORDER BY created_at DESC LIMIT 100"):rows("SELECT * FROM qualification_alerts WHERE owner=? ORDER BY created_at DESC LIMIT 100",user.email),
       pipelines(db()),
-      rows("SELECT id,entity_type AS entityType,name,field_key AS fieldKey,field_type AS fieldType,options FROM custom_field_definitions WHERE entity_type='company' ORDER BY name"),
-      rows("SELECT definition_id AS definitionId,entity_type AS entityType,entity_id AS entityId,value FROM custom_field_values WHERE entity_type='company'"),
+      rows("SELECT id,entity_type AS entityType,name,field_key AS fieldKey,field_type AS fieldType,options FROM custom_field_definitions WHERE entity_type IN ('company','deal') ORDER BY name"),
+      rows("SELECT definition_id AS definitionId,entity_type AS entityType,entity_id AS entityId,value FROM custom_field_values WHERE entity_type IN ('company','deal')"),
     ]);
     return Response.json({user,stakeholders,deals:deals.map(d=>({...d,status:!d.stage_key&&["Won","Lost"].includes(String(d.stage))?d.stage:d.status})),tasks,history,signals,alerts,pipelines:pipe,customFields:customFields.map(field=>({...field,options:JSON.parse(String(field.options||"[]"))})),customFieldValues:customValues,signalPoints,relationshipRoles,apolloConfigured:Boolean(String(env.APOLLO_API_KEY||"").trim())});
   }catch(error){console.error(error);return Response.json({error:"Sales foundation could not load."},{status:503});}
@@ -113,13 +119,7 @@ export async function POST(request:Request){
       const fieldValues=await customFieldValues(b,"company");
       const {id,before}=await saveCompany(db(),{name:str(b.name),owner:str(b.owner),stage:str(b.stage),notes:str(b.notes),website:str(b.website),domain:str(b.domain),industry:str(b.industry),tier:str(b.tier),territory:str(b.territory),tags:str(b.tags).split(","),fit_score:Number(b.fit_score),fit_reason:str(b.fit_reason),summary:str(b.summary),headquarters:str(b.headquarters),linkedin_url:str(b.linkedin_url),logo_url:str(b.logo_url),employee_range:str(b.employee_range),...(Object.hasOwn(b,"primary_contact_id")?{primary_contact_id:b.primary_contact_id?number(b.primary_contact_id,1,1e12):null}:{})},user.email,now);
       await audit(user,action,"sales",str(b.name),action,{before,after:b});
-      if(fieldValues.length){
-        const changes=fieldValues.flatMap(field=>[
-          db().prepare("DELETE FROM custom_field_values WHERE definition_id=? AND entity_type='company' AND entity_id=?").bind(field.id,id),
-          ...(field.value?[db().prepare("INSERT INTO custom_field_values(definition_id,entity_type,entity_id,value,updated_at) VALUES (?,'company',?,?,?)").bind(field.id,id,field.value,now)]:[]),
-        ]);
-        await db().batch(changes);
-      }
+      await saveCustomFieldValues(fieldValues,"company",id,now);
       return Response.json({id});
     }
     if(action==="saveStakeholder"){
@@ -161,7 +161,9 @@ export async function POST(request:Request){
         ...stages.map(s=>db().prepare("UPDATE deals SET stage_key=?,stage=?,probability=?,status=? WHERE pipeline_key=? AND COALESCE(stage_key,stage)=?").bind(s.key,s.name,s.probability,s.kind,id,s.key)),
       ]);await audit(user,action,"sales",id,action,{before,after:{name,stages}});
     }else if(action==="saveDeal"){
+      const fieldValues=await customFieldValues(b,"deal");
       const saved=await saveDeal(db(),{id:b.id?number(b.id,1,1e12):undefined,name:str(b.name),owner:str(b.owner),pipeline_key:str(b.pipeline_key),stage_key:str(b.stage_key),value:Number(b.value),contact_id:b.contact_id?number(b.contact_id,1,1e12):null,company_id:b.company_id?number(b.company_id,1,1e12):null,company:str(b.company),close_date:str(b.close_date),next_step:str(b.next_step),closed_reason:str(b.closed_reason),lead_source:str(b.lead_source),campaign:str(b.campaign),partner:str(b.partner),forecast_category:str(b.forecast_category)},user.email,now);
+      await saveCustomFieldValues(fieldValues,"deal",saved.id,now);
       await audit(user,action,"sales",String(saved.id),action,{before:saved.before,after:b});
     }else if(action==="saveTask"){
       const id=number(b.deal_id,1,1e12);await createDealTask(db(),{dealId:id,title:str(b.title),owner:str(b.owner),dueDate:str(b.due_date),now});await audit(user,action,"sales",String(id),action,{before:null,after:b});
