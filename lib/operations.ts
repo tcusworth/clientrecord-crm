@@ -34,8 +34,11 @@ export async function runDueAutomations(actor = "system") {
   const started = await env.DB.prepare("INSERT INTO job_runs(job_type,status,started_at) VALUES ('sequences','Running',datetime('now'))").run();
   const runId = Number(started.meta.last_row_id); let processed=0, failed=0;
   try {
-    const due = await env.DB.prepare("SELECT e.id,e.sequence_id AS sequenceId,e.contact_id AS contactId,e.current_step AS currentStep,c.first_name AS firstName,c.last_name AS lastName,c.email,c.subscribed FROM automation_enrollments e JOIN contacts c ON c.id=e.contact_id WHERE e.status='Active' AND e.next_run_at<=datetime('now') ORDER BY e.next_run_at LIMIT 100").all<Row>();
+    const due = await env.DB.prepare("SELECT e.id,e.sequence_id AS sequenceId,e.next_run_at AS nextRunAt,e.contact_id AS contactId,e.current_step AS currentStep,c.first_name AS firstName,c.last_name AS lastName,c.email,c.subscribed FROM automation_enrollments e JOIN contacts c ON c.id=e.contact_id WHERE e.status='Active' AND e.next_run_at<=datetime('now') ORDER BY e.next_run_at LIMIT 100").all<Row>();
     for (const row of due.results) {
+      // Claim the row (push next_run_at out 15 min) so overlapping runs (cron, page load, manual) process it once; a crashed run's claim expires.
+      const claim = await env.DB.prepare("UPDATE automation_enrollments SET next_run_at=datetime('now','+15 minutes') WHERE id=? AND status='Active' AND next_run_at=?").bind(row.id,row.nextRunAt).run();
+      if (Number(claim.meta.changes||0) !== 1) continue;
       const step = await env.DB.prepare("SELECT * FROM automation_steps WHERE sequence_id=? AND step_order=?").bind(row.sequenceId,row.currentStep).first<Row>();
       if (!step) { await env.DB.prepare("UPDATE automation_enrollments SET status='Completed',completed_at=datetime('now') WHERE id=?").bind(row.id).run(); continue; }
       try {
@@ -62,7 +65,7 @@ export async function runDueAutomations(actor = "system") {
         processed++;
       } catch (error) {
         failed++; const message=error instanceof Error?error.message:String(error);
-        await Promise.all([recordDelivery("resend",String(step.action_type||"automation"),"Failed",String(row.email||""),String(step.subject||step.task_title||""),undefined,message,{enrollmentId:row.id}),systemEvent("error","automation","sequence-runner",message,{enrollmentId:row.id})]);
+        await Promise.all([env.DB.prepare("UPDATE automation_enrollments SET next_run_at=? WHERE id=? AND status='Active'").bind(row.nextRunAt,row.id).run(),recordDelivery("resend",String(step.action_type||"automation"),"Failed",String(row.email||""),String(step.subject||step.task_title||""),undefined,message,{enrollmentId:row.id}),systemEvent("error","automation","sequence-runner",message,{enrollmentId:row.id})]);
       }
     }
     await env.DB.prepare("UPDATE job_runs SET status=?,processed=?,failed=?,message=?,completed_at=datetime('now') WHERE id=?").bind(failed?"Completed with errors":"Completed",processed,failed,`${processed} processed`,runId).run();
