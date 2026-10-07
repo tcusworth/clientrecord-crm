@@ -1,4 +1,4 @@
-import { env } from "cloudflare:workers";
+import { env, waitUntil } from "cloudflare:workers";
 import { fromEmail, resend, resendConfigured, sendingIdentity } from "@/lib/resend";
 import { runCustomerSuccessAlerts } from "@/lib/customer-success";
 import { DEFAULT_OWNER_EMAIL } from "@/lib/crm-auth";
@@ -139,16 +139,19 @@ export async function databaseHealth() {
   return {status:Object.values(integrity||{}).includes("ok")&&!foreign.length?"Healthy":"Attention",integrity:Object.values(integrity||{})[0]||"unknown",foreignKeyIssues:foreign.length,tables:Number(tables?.count||0),latencyMs:Date.now()-started,checkedAt:new Date().toISOString()};
 }
 
-export async function runDailyMaintenance(actor="system") {
+// Page loads must not wait on provider calls: mail sync is handed to the Worker's waitUntil. `defer` overrides that; false (cron) or no
+// waitUntil (node tests) awaits it inline. Sync failures are logged, never thrown.
+export type Defer = ((work: Promise<unknown>) => void) | false;
+export async function runDailyMaintenance(actor="system", defer?: Defer) {
   const started=await env.DB.prepare("INSERT INTO job_runs(job_type,status,started_at) VALUES ('daily-maintenance','Running',datetime('now'))").run();const id=Number(started.meta.last_row_id);
-  try { const sequences=await runDueAutomations(actor);try{await syncAllAccounts();}catch(error){await systemEvent("warning","integration","mail-sync",`Mail sync failed during daily maintenance: ${error instanceof Error?error.message:String(error)}`);} const stagnation=await runStagnationAlerts(),inbox=await runInboxSlaAlerts(),customerSuccess=await runCustomerSuccessAlerts(),purged=await applyRetention(),backup=await createBackup(actor,"daily"); const alerts=stagnation+inbox+customerSuccess,processed=sequences.processed+alerts+purged; await env.DB.prepare("UPDATE job_runs SET status='Completed',processed=?,failed=?,message=?,completed_at=datetime('now') WHERE id=?").bind(processed,sequences.failed,`Backup ${backup.id}; ${alerts} alerts; ${purged} records purged`,id).run(); return {sequences,alerts,purged,backup}; }
+  try { const sequences=await runDueAutomations(actor);const mailSync=syncAllAccounts().catch(error=>systemEvent("warning","integration","mail-sync",`Mail sync failed during daily maintenance: ${error instanceof Error?error.message:String(error)}`)),later=defer===false?undefined:defer||(typeof waitUntil==="function"?waitUntil:undefined);if(later)later(mailSync);else await mailSync; const stagnation=await runStagnationAlerts(),inbox=await runInboxSlaAlerts(),customerSuccess=await runCustomerSuccessAlerts(),purged=await applyRetention(),backup=await createBackup(actor,"daily"); const alerts=stagnation+inbox+customerSuccess,processed=sequences.processed+alerts+purged; await env.DB.prepare("UPDATE job_runs SET status='Completed',processed=?,failed=?,message=?,completed_at=datetime('now') WHERE id=?").bind(processed,sequences.failed,`Backup ${backup.id}; ${alerts} alerts; ${purged} records purged`,id).run(); return {sequences,alerts,purged,backup}; }
   catch(error){const message=error instanceof Error?error.message:String(error);await env.DB.prepare("UPDATE job_runs SET status='Failed',failed=1,message=?,completed_at=datetime('now') WHERE id=?").bind(message,id).run();await systemEvent("error","job","daily-maintenance",message);throw error;}
 }
 
-export async function maybeRunDailyMaintenance(actor:string) {
+export async function maybeRunDailyMaintenance(actor:string, defer?: Defer) {
   const running=await env.DB.prepare("SELECT id FROM job_runs WHERE job_type='daily-maintenance' AND status='Running' AND started_at>=datetime('now','-15 minutes') LIMIT 1").first();if(running)return false;
   const latest=await env.DB.prepare("SELECT completed_at AS completedAt FROM job_runs WHERE job_type='daily-maintenance' AND status='Completed' ORDER BY completed_at DESC LIMIT 1").first<{completedAt:string}>();
   if(latest?.completedAt && Date.now()-new Date(latest.completedAt).getTime()<20*3600000)return false;
-  try { await runDailyMaintenance(actor); return true; }
+  try { await runDailyMaintenance(actor,defer); return true; }
   catch { return false; }
 }

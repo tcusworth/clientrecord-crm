@@ -17,7 +17,7 @@ export async function runScheduled(scheduledTime: number): Promise<ScheduledRun>
     catch (error) { const message = error instanceof Error ? error.message : String(error); result.errors.push({ job, message }); console.error(`scheduled ${job} failed`, error); await systemEvent("error", "job", "scheduler", `Scheduled ${job} failed: ${message}`, { job, scheduledTime: new Date(scheduledTime).toISOString() }); return null; }
   };
   const actor = ownerEmail();
-  if (result.localHour === DAILY_MAINTENANCE_HOUR) result.dailyMaintenance = (await attempt("daily-maintenance", () => maybeRunDailyMaintenance(actor))) ?? false;
+  if (result.localHour === DAILY_MAINTENANCE_HOUR) result.dailyMaintenance = (await attempt("daily-maintenance", () => maybeRunDailyMaintenance(actor, false))) ?? false;
   if (!result.dailyMaintenance) result.sequences = await attempt("sequences", () => runDueAutomations(actor));
   // Every connected Google/Microsoft account (daily maintenance already did this when it ran).
   if (!result.dailyMaintenance) result.mailSync = await attempt("mail-sync", () => syncAllAccounts(new Date(scheduledTime)));

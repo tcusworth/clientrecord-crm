@@ -70,6 +70,61 @@ sqlite.prepare("UPDATE integration_accounts SET last_synced_at=NULL").run();
 await runDailyMaintenance("owner@example.com");
 assert.equal(jobs().length, 1);
 assert.deepEqual(sqlite.prepare("SELECT status FROM job_runs WHERE job_type='daily-maintenance'").all().map(r => r.status), ["Completed"]);
+// 5. 6 AM paths: maintenance ran -> exactly one sync; maintenance skipped by its 20 h guard -> the hourly sync still runs.
+sqlite.exec("DELETE FROM job_runs");
+const sixAm = new Date("2026-07-15T12:00:00Z").getTime();
+let six = await runScheduled(sixAm);
+assert.equal(six.dailyMaintenance, true); assert.equal(six.mailSync, null); assert.deepEqual(six.errors, []);
+assert.equal(jobs().length, 1, "maintenance ran: the account sync happens once");
+six = await runScheduled(sixAm);
+assert.equal(six.dailyMaintenance, false); assert.ok(six.mailSync, "guard skipped maintenance: hourly sync runs");
+assert.equal(jobs().length, 2);
+
+// 6. Page-load maintenance hands the sync to the scheduler instead of waiting on it.
+let release; const gate = new Promise(resolve => { release = resolve; });
+const gatedFetch = globalThis.fetch;
+globalThis.fetch = async (url, ...rest) => { await gate; return gatedFetch(url, ...rest); };
+sqlite.exec("DELETE FROM job_runs"); sqlite.prepare("UPDATE integration_accounts SET last_synced_at=NULL, status='connected'").run();
+const deferred = [];
+await runDailyMaintenance("owner@example.com", work => deferred.push(work));
+assert.equal(deferred.length, 1, "sync handed to defer");
+assert.deepEqual(sqlite.prepare("SELECT status FROM job_runs WHERE job_type='daily-maintenance'").all().map(r => r.status), ["Completed"], "maintenance finished while the sync is still in flight");
+assert.deepEqual(jobs(), [{ status: "Running", processed: 0, failed: 0 }]);
+// 7. Concurrency guard: a Running run within 15 minutes makes another call back off without touching accounts.
+const backoff = await syncAllAccounts();
+assert.equal(backoff.synced, 0); assert.ok(backoff.skipped >= 1); assert.equal(jobs().length, 1);
+release(); await deferred[0];
+globalThis.fetch = gatedFetch;
+assert.equal(jobs()[0].status, "Completed");
+// ...but a stale Running row (older than 15 minutes) does not block.
+sqlite.prepare("INSERT INTO job_runs(job_type,status,started_at) VALUES ('mail-sync','Running',datetime('now','-30 minutes'))").run();
+sqlite.prepare("UPDATE integration_accounts SET last_synced_at=NULL").run();
+assert.ok((await syncAllAccounts()).synced >= 1);
+
+// 8. Audit is always written; the webhook only for failures or when something was imported.
+sqlite.exec("INSERT INTO webhook_endpoints(id,name,url,events,secret_encrypted,active,created_at) VALUES ('wh','Hook','https://hooks.example.com','*','x',1,'now')");
+const hooks = () => sqlite.prepare("SELECT count(*) n FROM webhook_deliveries WHERE event='integration.sync'").get().n, auditRows = () => sqlite.prepare("SELECT count(*) n FROM audit_logs WHERE action='integration.sync'").get().n;
+const priorHooks = hooks(), priorAudit = auditRows();
+sqlite.prepare("UPDATE integration_accounts SET last_synced_at=NULL, status='connected'").run();
+sqlite.prepare("DELETE FROM integration_accounts WHERE id!=?").run(good);
+await syncAllAccounts();
+assert.equal(auditRows(), priorAudit + 1, "no-op sync still audited"); assert.equal(hooks(), priorHooks, "no-op sync emits no webhook");
+const plain = globalThis.fetch;
+globalThis.fetch = async (url, ...rest) => {
+  const u = String(url);
+  if (u.startsWith("https://gmail.googleapis.com/gmail/v1/users/me/messages?")) return Response.json({ messages: [{ id: "g9" }] });
+  if (u.startsWith("https://gmail.googleapis.com/gmail/v1/users/me/messages/g9?")) return Response.json({ id: "g9", threadId: "t9", internalDate: String(Date.now() - 86400000), payload: { headers: [{ name: "From", value: "stranger@unknown.test" }, { name: "To", value: "good@example.com.box" }, { name: "Subject", value: "Hello" }] } });
+  return plain(url, ...rest);
+};
+sqlite.prepare("UPDATE integration_accounts SET last_synced_at=NULL").run();
+result = await syncAllAccounts();
+assert.equal(result.synced, 1); assert.equal(auditRows(), priorAudit + 2); assert.equal(hooks(), priorHooks + 1, "import emits a webhook");
+globalThis.fetch = async (url, ...rest) => { if (String(url) === "https://oauth2.googleapis.com/token") return Response.json({ error: "invalid_grant" }, { status: 400 }); return plain(url, ...rest); };
+sqlite.prepare("UPDATE integration_accounts SET last_synced_at=NULL, expires_at='2000-01-01T00:00:00Z', status='connected'").run();
+result = await syncAllAccounts();
+assert.equal(result.failed.length, 1); assert.equal(auditRows(), priorAudit + 3); assert.equal(hooks(), priorHooks + 2, "failure emits a webhook");
+globalThis.fetch = plain;
+
 // A sync run that blows up outright is logged and does not fail maintenance.
 sqlite.exec("DROP TABLE integration_accounts; DELETE FROM job_runs");
 console.error = () => {};

@@ -129,9 +129,10 @@ function safeAuditChanges(changes: unknown) {
   return { serialized:JSON.stringify(value), value };
 }
 
-export async function audit(user: CRMUser, action: string, entityType: string, entityId: unknown, summary: string, changes: unknown = {}) {
+export async function audit(user: CRMUser, action: string, entityType: string, entityId: unknown, summary: string, changes: unknown = {}, options: { webhook?: boolean } = {}) {
   const safe = safeAuditChanges(changes);
   await env.DB.prepare("INSERT INTO audit_logs (actor_email,action,entity_type,entity_id,summary,changes,created_at) VALUES (?,?,?,?,?,?,datetime('now'))")
     .bind(user.email, action, entityType, entityId == null ? null : String(entityId), summary, safe.serialized).run();
+  if (options.webhook === false) return;
   await emitWebhook(action, { actorEmail:user.email, entityType, entityId:entityId==null?null:String(entityId), summary, changes:safe.value });
 }
