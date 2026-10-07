@@ -1,0 +1,46 @@
+"use client";
+
+import { useCallback, useEffect, useState } from "react";
+import { AlertTriangle, Check, Mail, RefreshCw } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Heading, Panel } from "@/components/workspace-primitives";
+
+type Account={id:number;provider:string;userEmail:string;userName:string;accountEmail:string;lastSyncedAt:string|null;status:"connected"|"needs_reconnect";syncEmail:boolean;syncCalendar:boolean;autoTasks:boolean};
+type Provider={provider:string;configured:boolean};
+type Data={accounts:Provider[];personal:{mine:Account[];team:Account[]|null}};
+const providers=["microsoft","google"] as const;
+const providerName=(provider:string)=>provider==="microsoft"?"Microsoft 365":"Google Workspace";
+const when=(value:string|null)=>value?new Date(value).toLocaleString():"Never";
+const prefs=[["syncEmail","Synchronize email"],["syncCalendar","Synchronize calendar"],["autoTasks","Create post-meeting tasks"]] as const;
+const StatusBadge=({status}:{status:Account["status"]})=>status==="needs_reconnect"?<Badge variant="destructive"><AlertTriangle size={12}/>Needs reconnecting</Badge>:<Badge>Connected</Badge>;
+
+export function EmailCalendarWorkspace({canEdit}:{canEdit:boolean}){
+ const[data,setData]=useState<Data|null>(null),[error,setError]=useState(""),[notice,setNotice]=useState(""),[busy,setBusy]=useState(""),[drafts,setDrafts]=useState<Record<number,Account>>({});
+ const load=useCallback(async()=>{const r=await fetch("/api/integrations",{cache:"no-store"}),body=await r.json() as Partial<Data>&{error?:string};if(!r.ok||!body.personal)throw new Error(body.error||"Email & calendar connections could not load.");setData({accounts:body.accounts||[],personal:body.personal});setDrafts({});setError("")},[]);
+ useEffect(()=>{void load().catch(e=>setError(e instanceof Error?e.message:"Email & calendar connections could not load."))},[load]);
+ const flash=(message:string)=>{setNotice(message);window.setTimeout(()=>setNotice(""),3200)};
+ const post=async(key:string,payload:Record<string,unknown>,message:string)=>{setBusy(key);setError("");try{const r=await fetch("/api/integrations",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(payload)}),body=await r.json() as {error?:string};if(!r.ok)throw new Error(body.error||"The change could not be saved.");await load();flash(message)}catch(e){setError(e instanceof Error?e.message:"The change could not be saved.")}finally{setBusy("")}};
+ const disconnect=(account:Account,own:boolean)=>{const who=own?"your":`${account.userName}'s`;if(!window.confirm(`Disconnect ${who} ${providerName(account.provider)} account (${account.accountEmail})? ClientRecord will stop syncing it and delete the stored tokens. Emails and meetings already logged stay in the CRM.`))return;void post(`disconnect-${account.id}`,{action:"disconnect",provider:account.provider,id:account.id},`${providerName(account.provider)} disconnected`)};
+ const sync=async(account:Account)=>{const key=`sync-${account.id}`;setBusy(key);setError("");try{const r=await fetch(`/api/${account.provider}/sync`,{method:"POST"}),body=await r.json() as {error?:string;messages?:number;meetings?:number};if(!r.ok)throw new Error(body.error||"Synchronization failed.");await load();flash(`Synced ${body.messages??0} email${body.messages===1?"":"s"} and ${body.meetings??0} meeting${body.meetings===1?"":"s"}`)}catch(e){setError(e instanceof Error?e.message:"Synchronization failed.");await load().catch(()=>undefined)}finally{setBusy("")}};
+ if(!data)return <Panel className="p-6 text-sm text-slate-500">{error||"Loading email & calendar connections…"}</Panel>;
+ const{mine,team}=data.personal;
+ return <>
+  <Heading eyebrow="Connected work" title="Email & calendar" detail="Connect your own mailbox and calendar. Emails and meetings that match CRM contacts are logged for the whole team, labelled with whose mailbox they came from."/>
+  {error&&<div role="alert" className="mb-4 rounded-xl bg-red-50 p-4 text-sm text-red-700">{error}</div>}{notice&&<div role="status" className="mb-4 flex items-center gap-2 rounded-xl bg-emerald-50 p-4 text-sm text-emerald-800"><Check size={16}/>{notice}</div>}
+  <h2 className="mb-3 text-lg font-semibold">Your connections</h2>
+  {!canEdit&&<div className="mb-4 rounded-xl border bg-slate-50 p-4 text-sm text-slate-600">You have view-only access, so you cannot connect an account. Ask an admin for edit access.</div>}
+  <div className="grid gap-6 xl:grid-cols-2">{providers.map(provider=>{const account=mine.find(item=>item.provider===provider),configured=data.accounts.find(item=>item.provider===provider)?.configured??true,draft=account?drafts[account.id]||account:null,key=account?`sync-${account.id}`:"";
+   return <Panel className="p-6" key={provider}><div className="flex items-start gap-4"><span className="grid h-12 w-12 place-items-center rounded-xl bg-[#e8edff] text-[#3156c9]"><Mail/></span><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><h3 className="text-lg font-semibold">{providerName(provider)}</h3>{account?<StatusBadge status={account.status}/>:<Badge variant="secondary">Not connected</Badge>}</div><p className="mt-2 text-sm leading-6 text-slate-600">Logs matching email and meetings, detects replies, stops active sequences, and can create post-meeting tasks.</p>
+    {account&&draft?<>
+     <div className="mt-4 rounded-xl bg-slate-50 p-4 text-sm"><strong>{account.accountEmail}</strong><div className="mt-1 text-xs text-slate-500">Last sync: {when(account.lastSyncedAt)}</div></div>
+     {account.status==="needs_reconnect"&&<div role="alert" className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">ClientRecord can no longer reach this account, so syncing is paused. Reconnect to resume.{canEdit&&<div className="mt-3"><a href={`/api/${provider}/connect`} target="_top" className="inline-flex h-9 items-center rounded-md bg-[#3968ff] px-4 text-sm font-semibold text-white">Reconnect {providerName(provider)}</a></div>}</div>}
+     <div className="mt-4 grid gap-2">{prefs.map(([name,label])=><label key={name} className="flex items-center gap-2 text-sm"><input type="checkbox" disabled={!canEdit} checked={draft[name]} onChange={e=>setDrafts(current=>({...current,[account.id]:{...draft,[name]:e.target.checked}}))}/>{label}</label>)}</div>
+     {canEdit&&<div className="mt-5 flex flex-wrap gap-2"><Button variant="outline" disabled={Boolean(busy)} onClick={()=>void post(`save-${account.id}`,{action:"savePreferences",provider,id:account.id,syncEmail:draft.syncEmail,syncCalendar:draft.syncCalendar,autoTasks:draft.autoTasks},"Preferences saved")}>Save preferences</Button><Button disabled={Boolean(busy)||account.status==="needs_reconnect"} onClick={()=>void sync(account)}><RefreshCw size={16} className={busy===key?"animate-spin":""}/>{busy===key?"Syncing…":"Sync now"}</Button><Button variant="outline" disabled={Boolean(busy)} onClick={()=>disconnect(account,true)}>Disconnect</Button></div>}
+    </>:<>{!configured&&<div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">This provider is not set up yet. An admin needs to add its OAuth client ID, client secret, and token encryption key in Site environment variables.</div>}
+     {canEdit?<a href={`/api/${provider}/connect`} target="_top" aria-disabled={!configured} className={`mt-5 inline-flex h-10 items-center rounded-md bg-[#3968ff] px-4 text-sm font-semibold text-white ${!configured?"pointer-events-none opacity-50":""}`}>Connect {providerName(provider)}</a>:<p className="mt-4 text-sm text-slate-500">Ask an admin for edit access to connect this account.</p>}</>}
+   </div></div></Panel>})}</div>
+  {team&&<Panel className="mt-8 overflow-hidden"><div className="border-b p-5"><h2 className="text-lg font-semibold">Team connections</h2><p className="mt-1 text-sm text-slate-500">Every connected mailbox in the workspace. Disconnecting one stops its sync and deletes its stored tokens.</p></div>
+   {team.length?<div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead className="bg-slate-50 text-xs text-slate-500"><tr><th className="px-5 py-3 font-semibold">Person</th><th className="px-5 py-3 font-semibold">Provider</th><th className="px-5 py-3 font-semibold">Account</th><th className="px-5 py-3 font-semibold">Last synced</th><th className="px-5 py-3 font-semibold">Status</th><th className="px-5 py-3"/></tr></thead><tbody>{team.map(account=><tr key={account.id} className="border-t"><td className="px-5 py-3"><strong>{account.userName}</strong>{account.userName!==account.userEmail&&<div className="text-xs text-slate-500">{account.userEmail}</div>}</td><td className="px-5 py-3">{providerName(account.provider)}</td><td className="px-5 py-3">{account.accountEmail}</td><td className="px-5 py-3">{when(account.lastSyncedAt)}</td><td className="px-5 py-3"><StatusBadge status={account.status}/></td><td className="px-5 py-3 text-right"><Button size="sm" variant="outline" disabled={Boolean(busy)} onClick={()=>disconnect(account,false)}>Disconnect</Button></td></tr>)}</tbody></table></div>:<div className="p-8 text-center text-sm text-slate-500">Nobody has connected an account yet.</div>}</Panel>}
+ </>;
+}

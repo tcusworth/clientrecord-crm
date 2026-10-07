@@ -159,7 +159,7 @@ export async function GET(request:Request){
     const [company,notes,activities,tasks,history,stakeholders,lineItems,insights,reviews,proposals,documents,unassigned,meetings,meetingAttendees,briefRows]=await Promise.all([
       deal.resolved_company_id?one("SELECT * FROM companies WHERE id=?",Number(deal.resolved_company_id)):Promise.resolve(null),
       rows("SELECT * FROM deal_notes WHERE deal_id=? ORDER BY pinned DESC,created_at DESC",dealId),
-      rows("SELECT a.*,c.first_name||' '||c.last_name AS contact_name FROM deal_activities a LEFT JOIN contacts c ON c.id=a.contact_id WHERE a.deal_id=? ORDER BY a.pinned DESC,a.happened_at DESC",dealId),
+      rows("SELECT a.*,c.first_name||' '||c.last_name AS contact_name,(SELECT t.name FROM team_members t WHERE lower(t.email)=lower(a.owner) AND t.name<>'' LIMIT 1) AS owner_name FROM deal_activities a LEFT JOIN contacts c ON c.id=a.contact_id WHERE a.deal_id=? ORDER BY a.pinned DESC,a.happened_at DESC",dealId),
       rows("SELECT * FROM deal_tasks WHERE deal_id=? ORDER BY completed,due_date",dealId),
       rows("SELECT * FROM deal_stage_history WHERE deal_id=? ORDER BY happened_at DESC",dealId),
       rows("SELECT s.*,c.first_name||' '||c.last_name AS contact_name,c.email,c.title FROM deal_stakeholders s JOIN contacts c ON c.id=s.contact_id WHERE s.deal_id=? ORDER BY s.is_primary DESC,c.first_name",dealId),
@@ -179,7 +179,7 @@ export async function GET(request:Request){
     ]);
     const health=calculateHealth(deal,tasks,activities,stakeholders,insights,reviews,lineItems),relationship=await relationshipHealth(dealId,deal,tasks,activities,stakeholders),coverage=calculateStakeholderCoverage({deal,stage:await coverageStage(deal),stakeholders,activities}),nextAction=await nextBestAction(dealId,deal,tasks,reviews,proposals,insights,activities,coverage);
     const timeline=[
-      ...activities.map(item=>({id:`activity-${item.id}`,kind:"Activity",type:item.type,title:item.subject||item.type,detail:item.body,owner:item.owner,date:item.happened_at,pinned:Boolean(item.pinned)})),
+      ...activities.map(item=>({id:`activity-${item.id}`,kind:"Activity",type:item.type,title:item.subject||item.type,detail:item.body,owner:item.owner,mailbox:["Google","Microsoft"].includes(String(item.source))?String(item.owner_name||item.owner||""):"",date:item.happened_at,pinned:Boolean(item.pinned)})),
       ...notes.map(item=>({id:`note-${item.id}`,kind:item.kind,title:item.kind,detail:item.body,owner:item.owner,date:item.created_at,pinned:Boolean(item.pinned)})),
       ...tasks.map(item=>({id:`task-${item.id}`,kind:"Task",title:item.title,detail:item.completed?"Completed":`Due ${item.due_date}`,owner:item.owner,date:item.created_at,pinned:false})),
       ...history.map(item=>({id:`stage-${item.id}`,kind:"Stage",title:`${item.from_stage} → ${item.to_stage}`,detail:item.reason,owner:item.actor,date:item.happened_at,pinned:false})),
