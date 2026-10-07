@@ -78,4 +78,21 @@ await deals.saveDeal(env.DB, { id: textOnly.id, name: "Text company deal", owner
 assert.equal(deal(textOnly.id).company, "Acme", "a linked company record sets the name");
 assert.equal(deal(textOnly.id).company_id, 1);
 
+// Deals drawer: the form always sends contact_id, so saving a deal keeps its primary contact.
+sqlite.prepare("INSERT INTO contacts(id,first_name,last_name,email,company,created_at,updated_at) VALUES (7,'Pat','Lee','pat@acme.test','Acme','now','now')").run();
+const withContact = await deals.saveDeal(env.DB, { name: "Contact deal", owner, pipeline_key: "csi", stage_key: "target", next_step: "Call", company_id: 1, contact_id: 7 }, owner);
+assert.equal(deal(withContact.id).contact_id, 7);
+const form = load("lib/deal-form.ts");
+const drawerEntries = { name: "Contact deal", company_id: "1", owner, stage_key: "target", value: "0", close_date: "", next_step: "Call again", forecast_category: "Pipeline", lead_source: "Direct", partner: "", campaign: "" };
+const drawerPayload = form.dealFormPayload({ id: withContact.id, company: "Acme", company_id: 1 }, drawerEntries, "csi", "7");
+assert.equal(drawerPayload.contact_id, "7", "the drawer form sends the selected primary contact");
+assert.equal(form.dealFormPayload({ id: withContact.id, company: "Acme", company_id: 1 }, drawerEntries, "csi", "").contact_id, "", "an empty selection is still sent (none)");
+const saveDealRoute = body => sales.POST(new Request("https://crm.example.com/api/sales", { method: "POST", headers, body: JSON.stringify({ action: "saveDeal", ...body }) }));
+response = await saveDealRoute(drawerPayload);
+assert.equal(response.status, 200, JSON.stringify(await response.clone().json()));
+assert.equal(deal(withContact.id).contact_id, 7, "a drawer save keeps the primary contact");
+assert.equal(deal(withContact.id).next_step, "Call again");
+response = await saveDealRoute({ id: withContact.id, ...drawerEntries, pipeline_key: "csi" });
+assert.equal(deal(withContact.id).contact_id, null, "the old payload without contact_id cleared the contact, which is why the form must send it");
+
 console.log("PASS: main pipeline rule");
