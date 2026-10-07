@@ -124,7 +124,7 @@ Machine clients use scoped API keys (`Authorization: Bearer cr_live_…`), creat
    ```
 
    This writes `tables/<name>.json` (the import source of truth), `csv/<name>.csv` (for people), `manifest.json`, `objects/<key>` and `export-info.json`. It exits non-zero if any object is missing or fails its SHA-256 checksum. Keep the directory private: it holds all CRM data, including every proposal's live share link token (anyone with a token can open and sign that proposal). Don't sync it to cloud storage, and delete it once the import is verified. Share tokens are kept on purpose so links already sent to clients keep working; if the folder may have been exposed, regenerate links for unsigned proposals after the move.
-4. **Prepare the target.** Create the D1 database `clientrecord-crm-db` and the R2 bucket `clientrecord-crm-files`, then apply every `drizzle/*.sql` migration to the database.
+4. **Prepare the target.** Create the D1 database `clientrecord-crm-db` and the R2 bucket `clientrecord-crm-files`, then apply every `drizzle/*.sql` migration to the database. Migration `0029_csi_deal_fields` seeds four deal custom field definitions, and the export already contains them, so clear them before importing: `wrangler d1 execute clientrecord-crm-db --remote --command "DELETE FROM custom_field_definitions WHERE entity_type='deal'"`.
 5. **Import** (`--local` or `--remote` is required; `--dry-run` only writes the SQL and prints the plan):
 
    ```bash

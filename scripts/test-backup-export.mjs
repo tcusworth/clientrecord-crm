@@ -256,6 +256,8 @@ try {
 
   // Import into a fresh database with every migration applied.
   const fresh = createSqlite();
+  // README step 4: migration 0029 seeds the CSI deal fields, so a restore clears them before importing the exported copies.
+  fresh.exec("DELETE FROM custom_field_definitions WHERE entity_type='deal'");
   const schema = await readTargetSchema(async sql => fresh.prepare(sql).all());
   const exportedTables = fs.readdirSync(path.join(tmp, "tables")).sort().map(file => JSON.parse(fs.readFileSync(path.join(tmp, "tables", file), "utf8")));
   const order = topoSort(exportedTables.map(table => table.table), schema.dependencies);

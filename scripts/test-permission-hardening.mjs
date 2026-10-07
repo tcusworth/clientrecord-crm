@@ -67,7 +67,8 @@ await expectStatus(crm.post(editor, { action: "suppressContact", email: "casey@a
 await expectStatus(crm.post(editor, { action: "restoreContact", email: "casey@acme.test" }), 200, "editor restores a manual suppression");
 
 // 7. advanced setFieldValue validates like crm and checks the definition's entity.
-sqlite.exec(`INSERT INTO custom_field_definitions(id,entity_type,name,field_key,field_type,options,created_at) VALUES (1,'contact','Tier','tier','select','["Gold","Silver"]','now'),(2,'contact','Seats','seats','number','[]','now')`);
+// Migration 0029 seeds the CSI deal fields (ids 1-4); this test seeds its own definitions with fixed ids.
+sqlite.exec(`DELETE FROM custom_field_definitions WHERE entity_type='deal'; INSERT INTO custom_field_definitions(id,entity_type,name,field_key,field_type,options,created_at) VALUES (1,'contact','Tier','tier','select','["Gold","Silver"]','now'),(2,'contact','Seats','seats','number','[]','now')`);
 await expectStatus(advanced.post(editor, { action: "setFieldValue", definitionId: 1, entityType: "contact", entityId: 1, value: "Platinum" }), 400, "invalid select option");
 await expectStatus(advanced.post(editor, { action: "setFieldValue", definitionId: 2, entityType: "contact", entityId: 1, value: "lots" }), 400, "invalid number");
 await expectStatus(advanced.post(editor, { action: "setFieldValue", definitionId: 1, entityType: "deal", entityId: 1, value: "Gold" }), 400, "entity mismatch");

@@ -18,6 +18,7 @@ UPDATE companies SET primary_contact_id=3 WHERE id=1;
 INSERT INTO deals(id,name,company,company_id,contact_id,stage,status,created_at,updated_at) VALUES (1,'Acme deal','Acme',1,3,'Lead','Open','now','now');
 INSERT INTO automation_sequences(id,name,created_at,updated_at) VALUES (1,'Seq','now','now');
 INSERT INTO partner_companies(id,name,owner,created_at,updated_at) VALUES ('p1','Partner','${owner}','now','now');
+DELETE FROM custom_field_definitions WHERE entity_type='deal'; -- migration 0029 seeds deal fields (ids 1-4); this test uses fixed ids
 INSERT INTO custom_field_definitions(id,entity_type,name,field_key,field_type,options,created_at) VALUES (1,'contact','Tier','tier','text','[]','now');
 INSERT INTO custom_relationship_types(id,name,from_type,to_type,from_label,to_label,created_by,created_at,updated_at) VALUES ('rt','Knows','contact','company','knows','known by','${owner}','now','now');
 INSERT INTO activities(contact_id,type,note,happened_at) VALUES (3,'Call','call','now'),(1,'Call','keep call','now');

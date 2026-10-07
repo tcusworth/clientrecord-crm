@@ -26,7 +26,8 @@ await post("saveAccount",{},401,null);
 sqlite.exec("INSERT INTO team_members(email,role,created_at,updated_at) VALUES ('viewer@example.com','viewer','now','now'),('editor@example.com','editor','now','now')");
 await post("saveAccount",{},403,"viewer@example.com");
 await post("savePipeline",{},403,"editor@example.com");
-sqlite.exec("INSERT INTO custom_field_definitions(id,entity_type,name,field_key,field_type,options,created_at) VALUES (1,'company','Customer segment','customer_segment','select','[\"Enterprise\",\"SMB\"]','2026-01-01')");
+// Migration 0029 seeds the CSI deal fields (ids 1-4); this test seeds its own definitions with fixed ids.
+sqlite.exec("DELETE FROM custom_field_definitions WHERE entity_type='deal'; INSERT INTO custom_field_definitions(id,entity_type,name,field_key,field_type,options,created_at) VALUES (1,'company','Customer segment','customer_segment','select','[\"Enterprise\",\"SMB\"]','2026-01-01')");
 const account={name:"Legacy",owner:"editor@example.com",fit_score:70,fit_reason:"Strong industry fit",tags:"strategic,priority",customField_1:"Enterprise"};
 await post("saveAccount",account);
 assert.equal(one("SELECT value FROM custom_field_values WHERE definition_id=1 AND entity_type='company' AND entity_id=1").value,"Enterprise");
