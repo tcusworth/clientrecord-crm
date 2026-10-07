@@ -13,14 +13,15 @@ async function definitions(db: D1Database, entityType: CustomFieldEntity): Promi
   return (await db.prepare("SELECT id,name,field_key AS fieldKey,field_type AS fieldType,options FROM custom_field_definitions WHERE entity_type=? ORDER BY name").bind(entityType).all<Row>()).results.map(d => ({ id: Number(d.id), name: String(d.name), fieldKey: String(d.fieldKey), fieldType: String(d.fieldType), options: options(d.options) }));
 }
 
-/** Validates a `{ "Field name" or field_key: value }` object (case-insensitive keys; null or "" clears; select options match case-insensitively and are stored as configured). */
+/** Validates a `{ field_key or "Field name": value }` object (case-insensitive keys, an exact field_key match first, each field at most once; null or "" clears; select options match case-insensitively and are stored as configured). */
 export async function resolveCustomFields(db: D1Database, entityType: CustomFieldEntity, fields: unknown): Promise<ResolvedCustomField[]> {
   if (fields === undefined) return [];
   if (!fields || typeof fields !== "object" || Array.isArray(fields)) throw new ServiceError("fields must be an object keyed by field name.");
   const defs = await definitions(db, entityType), resolved = new Map<number, ResolvedCustomField>();
   for (const [key, raw] of Object.entries(fields as Row)) {
-    const wanted = key.trim().toLowerCase(), d = defs.find(f => f.name.toLowerCase() === wanted || f.fieldKey.toLowerCase() === wanted);
+    const wanted = key.trim().toLowerCase(), d = defs.find(f => f.fieldKey.toLowerCase() === wanted) ?? defs.find(f => f.name.toLowerCase() === wanted);
     if (!d) throw new ServiceError(defs.length ? `Unknown ${entityType} field "${key.slice(0, 80)}". Fields: ${defs.map(f => f.name).join(", ")}.` : `There are no ${entityType} custom fields.`);
+    if (resolved.has(d.id)) throw new ServiceError(`${d.name} was given twice.`);
     if (raw !== null && !["string", "number", "boolean"].includes(typeof raw)) throw new ServiceError(`${d.name} must be text, a number, true/false or null.`);
     let value = raw === null ? "" : String(raw).trim();
     if (d.fieldType === "select") value = d.options.find(o => o.toLowerCase() === value.toLowerCase()) ?? value;

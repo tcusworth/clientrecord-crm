@@ -159,4 +159,10 @@ assert.deepEqual((await reads.listDeals(db, { q: "Open One" })).rows[0].fields, 
 assert.deepEqual((await reads.dealDetail(db, big.id)).deal.fields, {});
 await db.batch(fields.customFieldStatements(db, "deal", open.id, [{ ...resolved[0], value: "" }], "now"));
 assert.ok(!("Seats" in (await reads.dealDetail(db, open.id)).deal.fields), "blank clears");
+// a key matches an exact field_key before a field name; two keys resolving to one field are rejected
+sqlite.exec("INSERT INTO custom_field_definitions(entity_type,name,field_key,field_type,options,created_at) VALUES ('deal','Region','territory','text','[]','now'),('deal','Territory','region','text','[]','now')");
+assert.deepEqual((await fields.resolveCustomFields(db, "deal", { REGION: "West" })).map(f => [f.name, f.value]), [["Territory", "West"]], "field_key wins over another field's name");
+assert.deepEqual((await fields.resolveCustomFields(db, "deal", { "Region ": "East" })).map(f => f.name), ["Territory"], "trimmed, case-insensitive key match");
+await assert.rejects(fields.resolveCustomFields(db, "deal", { Seats: 1, seats: 2 }), e => e instanceof ServiceError && e.status === 400 && e.message === "Seats was given twice.");
+await assert.rejects(fields.resolveCustomFields(db, "deal", { "Deal type": "COPA Demo", DEAL_TYPE: "Training" }), e => e.status === 400 && e.message === "Deal type was given twice.");
 console.log("PASS: read models");
