@@ -26,9 +26,9 @@ assert.deepEqual(runs(ctx.sqlite, "sequences"), ["Completed"]);
 assert.deepEqual(taskOwners(ctx.sqlite), ["owner@example.com"]);
 assert.equal(ctx.sqlite.prepare("SELECT count(*) count FROM backup_snapshots").get().count, 1);
 
-// A second 6 AM run within 20 h: sequences again, maintenance skipped by the existing guard.
+// The same 6 AM run delivered again (the 20 h guard compares wall-clock time with the last completed run): maintenance is skipped, hourly sequences run.
 const sequencesBefore = runs(ctx.sqlite, "sequences").length;
-result = await ctx.runScheduled(at("2026-07-16T12:00:00Z"));
+result = await ctx.runScheduled(at("2026-07-15T12:00:00Z"));
 assert.equal(result.localHour, 6);
 assert.equal(result.dailyMaintenance, false);
 assert.deepEqual(result.sequences, { processed: 0, failed: 0 });
