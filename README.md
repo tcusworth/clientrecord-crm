@@ -156,6 +156,7 @@ lib/                    domain logic, auth (crm-auth.ts), integrations (google, 
 db/schema.ts            Drizzle schema (migration generation only)
 drizzle/                ordered SQL migrations + drizzle-kit metadata
 scripts/                test-*.mjs suites and test harness
+worker/index.ts         Worker entry: vinext's fetch handler plus the Cron Trigger `scheduled` handler
 wrangler.jsonc          Worker name, route, bindings, vars (source of truth for deploy)
 vite.config.ts          vinext + @cloudflare/vite-plugin build config
 ```
@@ -168,6 +169,10 @@ The app runs as the Worker `clientrecord-crm` in the "Flatirons Creative Studio"
 How deploy works: `pnpm build` (`vinext build` + `@cloudflare/vite-plugin`) reads `wrangler.jsonc` and writes the deployable config to `dist/server/wrangler.json` plus a redirect file `.wrangler/deploy/config.json`. A plain `wrangler deploy` (no `--config`) follows that redirect and uploads the built Worker and `dist/client` assets. `pnpm run deploy` does build → `wrangler d1 migrations apply DB --remote --config wrangler.jsonc` (asks for confirmation when there are pending migrations) → `wrangler deploy`. Use `pnpm exec wrangler deploy --dry-run` after a build to check bindings without uploading. vinext also documents `npx @vinext/cloudflare deploy`, which is not installed here; the steps above are equivalent.
 
 Non-secret settings are `vars` in `wrangler.jsonc` and are rewritten on every deploy. Everything else is a Worker secret (`pnpm exec wrangler secret put NAME`), which deploys leave alone. `CF_ACCESS_AUD` is a secret rather than a var so it can differ per Access application (it changes at cutover) without editing the repo, and so a deploy can never reset it.
+
+### Scheduled jobs
+
+`wrangler.jsonc` `triggers.crons` fires the Worker every hour (`0 * * * *`); `worker/index.ts` hands it to `runScheduled` in `lib/scheduled-jobs.ts`. Every hour it sends due sequence emails (job `sequences`). When the run's local time in America/Denver is 6 AM (DST-aware) it also runs daily maintenance (job `daily-maintenance`: sequences, stagnation/inbox/customer-success alerts, retention, R2 backup), skipped if one already completed in the last 20 hours. Page loads still trigger daily maintenance as a fallback when it hasn't run in 20 hours. Runs are recorded in `job_runs` and listed under **Job history** on the Operations center screen; failures also land in `system_events` (Errors & failed automations). Locally, `pnpm build && pnpm start`, then `curl -X POST "http://127.0.0.1:8787/cdn-cgi/local/explorer/api/local/scheduled?worker=clientrecord-crm" -H 'content-type: application/json' -d '{"cron":"0 * * * *"}'` (add `"scheduled_time": <epoch ms>` to simulate 6 AM).
 
 ### Moving off OpenAI Sites
 
