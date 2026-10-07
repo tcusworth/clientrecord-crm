@@ -38,7 +38,7 @@ export async function runDueAutomations(actor = "system") {
     for (const row of due.results) {
       // Claim the row (push next_run_at out 15 min) so overlapping runs (cron, page load, manual) process it once; a crashed run's claim expires.
       const claim = await env.DB.prepare("UPDATE automation_enrollments SET next_run_at=datetime('now','+15 minutes') WHERE id=? AND status='Active' AND next_run_at=?").bind(row.id,row.nextRunAt).run();
-      if (Number(claim.meta.changes||0) !== 1) continue;
+      if (Number(claim.meta.changes||0) < 1) continue; // < 1, not !== 1: D1 changes may count audit-trigger writes; the id matches at most one row.
       const step = await env.DB.prepare("SELECT * FROM automation_steps WHERE sequence_id=? AND step_order=?").bind(row.sequenceId,row.currentStep).first<Row>();
       if (!step) { await env.DB.prepare("UPDATE automation_enrollments SET status='Completed',completed_at=datetime('now') WHERE id=?").bind(row.id).run(); continue; }
       try {
