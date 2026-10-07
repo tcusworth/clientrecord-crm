@@ -14,7 +14,7 @@ const rolePermissions: Record<CRMRole, CRMPermission[]> = {
 };
 
 // Fallback owner when CRM_ALLOWED_EMAILS is unset (also used for the Vite dev-server preview identity).
-export const DEFAULT_OWNER_EMAIL = "tcusworth@gmail.com";
+export const DEFAULT_OWNER_EMAIL = "trevor.cusworth@csi-automation.com";
 
 // API keys never inherit a human role: each scope grants only the permissions listed here.
 export const API_KEY_SCOPE_PERMISSIONS: Record<string, CRMPermission[]> = {
