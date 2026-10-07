@@ -67,14 +67,30 @@ Bindings and variables are typed in `cloudflare-env.d.ts`. Features whose variab
 | `TRUST_PLATFORM_IDENTITY_HEADERS` | no | Only for legacy OpenAI Sites hosting; leave unset on Cloudflare. See [Authentication](#authentication) |
 | `RESEND_API_KEY`, `RESEND_FROM_EMAIL`, `RESEND_WEBHOOK_SECRET` | optional | Campaign/transactional email via Resend and its signed webhook (`/api/resend/webhook`) |
 | `OPENAI_API_KEY` | optional | AI features (OpenAI Responses API) |
-| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | optional | Gmail + Google Calendar sync (read-only) |
-| `MS_CLIENT_ID`, `MS_CLIENT_SECRET`, `MS_TENANT_ID` | optional | Microsoft 365 mail/calendar sync via Microsoft Graph |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | optional | Personal Gmail + Google Calendar connections (read-only) |
+| `MS_CLIENT_ID`, `MS_CLIENT_SECRET`, `MS_TENANT_ID` | optional | Personal Microsoft 365 mail/calendar connections via Microsoft Graph (read-only) |
 | `QUICKBOOKS_CLIENT_ID`, `QUICKBOOKS_CLIENT_SECRET` | optional | QuickBooks Online billing connection |
 | `QUICKBOOKS_ENVIRONMENT` | optional | `sandbox` to use the Intuit sandbox API; production otherwise |
 | `QUICKBOOKS_DEFAULT_ITEM_ID` | optional | QuickBooks item used for invoice lines |
 | `APOLLO_API_KEY` | optional | Company enrichment via Apollo |
 
 OAuth redirect URIs follow `https://<host>/api/{google,microsoft,quickbooks}/callback`.
+
+## Personal email and calendar connections
+
+Each person connects their own Google or Microsoft 365 account under **More → Email & calendar**. Viewers can't connect. Owners and admins also see **Team connections** and can disconnect anyone. **Settings → Integrations** keeps QuickBooks and Meetily and points to the Email & calendar screen for Google and Microsoft.
+
+- Synced mail and calendar items are visible to everyone in the CRM and labelled with the mailbox owner.
+- Scopes are read-only (Gmail and Calendar read-only; Microsoft `Mail.Read` and `Calendars.Read`). API keys can't act on personal connections.
+- Sync runs automatically every hour from the Cron Trigger. While the cron isn't firing, the daily page-load maintenance starts a background sync instead. Accounts synced in the last 50 minutes are skipped, accounts with status `needs_reconnect` are skipped until the person reconnects, and overlapping runs back off.
+
+Rollout:
+
+1. Deploy (`pnpm run deploy`); migration 0031 applies automatically.
+2. Add the OAuth redirect URIs `https://clientrecordcrm.com/api/microsoft/callback` (Entra app registration) and `https://clientrecordcrm.com/api/google/callback` (Google Cloud console).
+3. Set the Worker secrets `MS_CLIENT_ID`, `MS_CLIENT_SECRET`, `MS_TENANT_ID`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, plus `CRM_TOKEN_ENCRYPTION_KEY` if it isn't already set.
+4. Grant Microsoft 365 admin consent for `Mail.Read` and `Calendars.Read` if CSI's tenant requires it.
+5. Confirm the Cloudflare Access bypass application still includes `/api/google/callback` and `/api/microsoft/callback` (see the bypass list under [Moving off OpenAI Sites](#moving-off-openai-sites)).
 
 ## Authentication
 
@@ -142,8 +158,7 @@ Machine clients use scoped API keys (`Authorization: Bearer cr_live_…`), creat
 
 - **Resend** – campaigns, transactional email, delivery webhooks
 - **OpenAI** – AI record fields, follow-up drafts, meeting intelligence, proposals (governed via AI settings)
-- **Google** – Gmail and Calendar sync
-- **Microsoft Graph** – Microsoft 365 mail and calendar sync
+- **Google** and **Microsoft Graph** – personal Gmail/Calendar and Microsoft 365 mail/calendar connections; see [Personal email and calendar connections](#personal-email-and-calendar-connections)
 - **QuickBooks Online** – customer and invoice billing
 - **Apollo** – company enrichment
 - **Cloudflare Access** – front-door authentication for the app (also supports service tokens)
