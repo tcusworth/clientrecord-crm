@@ -1,0 +1,15 @@
+import assert from "node:assert/strict";
+import { createTestContext } from "./test-helpers.mjs";
+const { sqlite } = createTestContext();
+const ins = (p, u) => sqlite.prepare("INSERT INTO integration_accounts(provider,user_email,account_email,access_token,refresh_token,expires_at,created_at,updated_at) VALUES (?,?,?,'a','r','2099-01-01','now','now')").run(p, u, u || "co@x.com");
+ins("microsoft", "a@x.com"); ins("microsoft", "b@x.com"); ins("quickbooks", "");
+assert.throws(() => ins("microsoft", "a@x.com"), /UNIQUE/);
+assert.throws(() => ins("quickbooks", ""), /UNIQUE/);
+assert.equal(sqlite.prepare("SELECT status FROM integration_accounts WHERE user_email='a@x.com'").get().status, "connected");
+sqlite.prepare("INSERT INTO sync_records(provider,external_id,item_type,account_id,occurred_at,created_at) VALUES ('microsoft','m1','email',1,'now','now')").run();
+assert.equal(sqlite.prepare("SELECT account_id FROM sync_records WHERE external_id='m1'").get().account_id, 1);
+sqlite.prepare("INSERT INTO inbox_messages(id,from_email,account_id,occurred_at,created_at,updated_at) VALUES ('i1','x@y.com',2,'now','now','now')").run();
+assert.equal(sqlite.prepare("SELECT account_id FROM inbox_messages WHERE id='i1'").get().account_id, 2);
+const idx = sqlite.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='integration_accounts'").all().map(r => r.name);
+assert.ok(idx.includes("integration_accounts_provider_user_unique") && !idx.includes("integration_accounts_provider_unique"));
+console.log("PASS: personal connections schema");

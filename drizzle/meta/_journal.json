@@ -218,6 +218,13 @@
       "when": 1791419520923,
       "tag": "0030_remove_test_deal",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "6",
+      "when": 1791505920923,
+      "tag": "0031_personal_connections",
+      "breakpoints": true
     }
   ]
 }
