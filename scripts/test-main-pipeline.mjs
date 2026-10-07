@@ -104,5 +104,14 @@ assert.equal(deal(withContact.id).contact_id, 7, "a drawer save keeps the primar
 assert.equal(deal(withContact.id).next_step, "Call again");
 response = await saveDealRoute({ id: withContact.id, ...drawerEntries, pipeline_key: "csi" });
 assert.equal(deal(withContact.id).contact_id, null, "the old payload without contact_id cleared the contact, which is why the form must send it");
+// A deal with a primary contact but no linked company keeps that contact on a drawer save (no company selected).
+const noCompany = await deals.saveDeal(env.DB, { name: "Contact only deal", owner, pipeline_key: "csi", stage_key: "target", next_step: "Call", contact_id: 7 }, owner);
+assert.equal(deal(noCompany.id).contact_id, 7);
+const noCompanyEntries = { ...drawerEntries, name: "Contact only deal", company_id: "" };
+const noCompanyPayload = form.dealFormPayload({ id: noCompany.id, company: "", company_id: null, contact_id: 7 }, noCompanyEntries, "csi", "");
+assert.equal(noCompanyPayload.contact_id, "7", "with no company selected the deal's existing contact is sent");
+response = await saveDealRoute(noCompanyPayload);
+assert.equal(response.status, 200, JSON.stringify(await response.clone().json()));
+assert.equal(deal(noCompany.id).contact_id, 7, "a drawer save without a company keeps the primary contact");
 
 console.log("PASS: main pipeline rule");

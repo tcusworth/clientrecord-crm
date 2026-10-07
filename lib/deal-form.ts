@@ -1,2 +1,3 @@
 // The Deals drawer's saveDeal payload. contact_id is always sent ("" = none) because the route treats a missing field as "clear the primary contact".
-export const dealFormPayload=(deal:{id:number;company:string;company_id:number|null},entries:Record<string,unknown>,pipelineId:string,contactId:string)=>({id:deal.id||undefined,company:deal.company_id?"":deal.company,...entries,contact_id:contactId,pipeline_key:pipelineId});
+// With a company selected it is the chosen company contact; with no company it stays the deal's existing contact (it cannot be picked without a company).
+export const dealFormPayload=(deal:{id:number;company:string;company_id:number|null;contact_id?:number|null},entries:Record<string,unknown>,pipelineId:string,contactId:string)=>({id:deal.id||undefined,company:deal.company_id?"":deal.company,...entries,contact_id:entries.company_id?contactId:String(deal.contact_id||""),pipeline_key:pipelineId});
