@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { fromEmail, resend, resendConfigured, sendingIdentity } from "@/lib/resend";
 import { runCustomerSuccessAlerts } from "@/lib/customer-success";
 import { DEFAULT_OWNER_EMAIL } from "@/lib/crm-auth";
+import { syncAllAccounts } from "@/lib/integrations/sync-all";
 import { escapeHtml } from "@/lib/email-templates";
 
 type Row = Record<string, unknown>;
@@ -140,7 +141,7 @@ export async function databaseHealth() {
 
 export async function runDailyMaintenance(actor="system") {
   const started=await env.DB.prepare("INSERT INTO job_runs(job_type,status,started_at) VALUES ('daily-maintenance','Running',datetime('now'))").run();const id=Number(started.meta.last_row_id);
-  try { const sequences=await runDueAutomations(actor),stagnation=await runStagnationAlerts(),inbox=await runInboxSlaAlerts(),customerSuccess=await runCustomerSuccessAlerts(),purged=await applyRetention(),backup=await createBackup(actor,"daily"); const alerts=stagnation+inbox+customerSuccess,processed=sequences.processed+alerts+purged; await env.DB.prepare("UPDATE job_runs SET status='Completed',processed=?,failed=?,message=?,completed_at=datetime('now') WHERE id=?").bind(processed,sequences.failed,`Backup ${backup.id}; ${alerts} alerts; ${purged} records purged`,id).run(); return {sequences,alerts,purged,backup}; }
+  try { const sequences=await runDueAutomations(actor);try{await syncAllAccounts();}catch(error){await systemEvent("warning","integration","mail-sync",`Mail sync failed during daily maintenance: ${error instanceof Error?error.message:String(error)}`);} const stagnation=await runStagnationAlerts(),inbox=await runInboxSlaAlerts(),customerSuccess=await runCustomerSuccessAlerts(),purged=await applyRetention(),backup=await createBackup(actor,"daily"); const alerts=stagnation+inbox+customerSuccess,processed=sequences.processed+alerts+purged; await env.DB.prepare("UPDATE job_runs SET status='Completed',processed=?,failed=?,message=?,completed_at=datetime('now') WHERE id=?").bind(processed,sequences.failed,`Backup ${backup.id}; ${alerts} alerts; ${purged} records purged`,id).run(); return {sequences,alerts,purged,backup}; }
   catch(error){const message=error instanceof Error?error.message:String(error);await env.DB.prepare("UPDATE job_runs SET status='Failed',failed=1,message=?,completed_at=datetime('now') WHERE id=?").bind(message,id).run();await systemEvent("error","job","daily-maintenance",message);throw error;}
 }
 
