@@ -34,6 +34,9 @@ assert.equal(renewed.stage, "Target");
 assert.equal(renewed.probability, 10);
 assert.equal(renewed.name, "Acme renewal");
 assert.equal(sqlite.prepare("SELECT count(*) AS n FROM sales_pipelines WHERE id='renewals'").get().n, 0, "no separate renewals pipeline is created");
+const csRoute = load("app/api/customer-success/route.ts");
+const csPayload = await (await csRoute.GET(new Request("https://crm.example.com/api/customer-success", { headers: { "oai-authenticated-user-id": `user-${owner}`, "oai-authenticated-user-email": owner } }))).json();
+assert.ok(csPayload.renewalDeals.some(d => d.id === renewal.dealId), "the renewal deal shows in the Customer success renewal pipeline");
 
 // v1 records API: a deal without a pipeline joins the main pipeline at its first Open stage.
 const auth = load("lib/crm-auth.ts");

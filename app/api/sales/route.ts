@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { audit, can, canAdmin, crmUser } from "@/lib/crm-auth";
 import { relationshipRoles, signalPoints, validateStages } from "@/lib/sales-rules";
 import { recalculateCompany, saveCompany } from "@/lib/services/companies";
-import { createDealTask, mainPipeline, pipelines, saveDeal, setDealTaskCompleted } from "@/lib/services/deals";
+import { createDealTask, pipelines, saveDeal, setDealTaskCompleted } from "@/lib/services/deals";
 import { ServiceError } from "@/lib/services/errors";
 import { chooseCompanyDomain, enrichCompanyApollo, enrichCompanyWebsite, normalizedCompanyDomain } from "@/lib/company-enrichment";
 
@@ -62,7 +62,7 @@ export async function GET(request:Request){
       rows("SELECT id,entity_type AS entityType,name,field_key AS fieldKey,field_type AS fieldType,options FROM custom_field_definitions WHERE entity_type IN ('company','deal') ORDER BY name"),
       rows("SELECT definition_id AS definitionId,entity_type AS entityType,entity_id AS entityId,value FROM custom_field_values WHERE entity_type IN ('company','deal')"),
     ]);
-    return Response.json({user,stakeholders,deals:deals.map(d=>({...d,status:!d.stage_key&&["Won","Lost"].includes(String(d.stage))?d.stage:d.status})),tasks,history,signals,alerts,pipelines:pipe,mainPipelineId:(await mainPipeline(db())).id,customFields:customFields.map(field=>({...field,options:JSON.parse(String(field.options||"[]"))})),customFieldValues:customValues,signalPoints,relationshipRoles,apolloConfigured:Boolean(String(env.APOLLO_API_KEY||"").trim())});
+    return Response.json({user,stakeholders,deals:deals.map(d=>({...d,status:!d.stage_key&&["Won","Lost"].includes(String(d.stage))?d.stage:d.status})),tasks,history,signals,alerts,pipelines:pipe,mainPipelineId:pipe[0].id,customFields:customFields.map(field=>({...field,options:JSON.parse(String(field.options||"[]"))})),customFieldValues:customValues,signalPoints,relationshipRoles,apolloConfigured:Boolean(String(env.APOLLO_API_KEY||"").trim())});
   }catch(error){console.error(error);return Response.json({error:"Sales foundation could not load."},{status:503});}
 }
 export async function POST(request:Request){
