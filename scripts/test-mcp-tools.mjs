@@ -138,6 +138,29 @@ sqlite.prepare("UPDATE contacts SET last_contact='2020-01-01' WHERE id=1").run()
 assert.equal((await callTool(editor, "log_activity", { recordType: "contact", id: 1, type: "Call", details: "Newer", happenedAt: "2026-01-15T10:00:00Z" })).ok, true);
 assert.equal(sqlite.prepare("SELECT last_contact FROM contacts WHERE id=1").get().last_contact, "2026-01-15", "newer activity still advances last_contact");
 
+// CSI deal custom fields (migration 0029): read as a `fields` object keyed by field name; written by name or field_key, validated like the CRM.
+for (const t of TOOLS.filter(t => ["create_deal", "update_deal"].includes(t.name))) assert.equal(t.inputSchema.properties.fields.type, "object", `${t.name} declares fields`);
+const fieldDeal = await callTool(owner, "create_deal", { name: "Field deal", nextStep: "Call", fields: { "Deal type": "COPA Demo", business_driver: "modernization", "TECHNICAL DRIVER": "Interoperability" } });
+assert.equal(fieldDeal.ok, true, fieldDeal.error);
+assert.deepEqual((await callTool(viewer, "get_deal", { id: fieldDeal.result.id })).result.deal.fields, { "Business driver": "Modernization", "Deal type": "COPA Demo", "Technical driver": "Interoperability" }, "option matched case-insensitively and stored canonically");
+const fieldAudit = JSON.parse(sqlite.prepare("SELECT changes FROM audit_logs WHERE action='mcp.create_deal' ORDER BY id DESC LIMIT 1").get().changes);
+assert.deepEqual(fieldAudit.customFields, { "Deal type": "COPA Demo", "Business driver": "Modernization", "Technical driver": "Interoperability" }, "field writes are audited");
+assert.equal((await callTool(editor, "update_deal", { id: fieldDeal.result.id, fields: { deal_type: "Training", "Business driver": null, source_campaign: "OPAF" } })).ok, true);
+assert.deepEqual((await callTool(viewer, "get_deal", { id: fieldDeal.result.id })).result.deal.fields, { "Deal type": "Training", "Source campaign": "OPAF", "Technical driver": "Interoperability" }, "null clears; unmentioned fields kept");
+assert.equal(JSON.parse(sqlite.prepare("SELECT changes FROM audit_logs WHERE action='mcp.update_deal' ORDER BY id DESC LIMIT 1").get().changes).customFields["Business driver"], "");
+const listedFields = (await callTool(viewer, "list_deals", { query: "Field deal" })).result.rows;
+assert.deepEqual(listedFields.map(r => r.fields), [{ "Deal type": "Training", "Source campaign": "OPAF", "Technical driver": "Interoperability" }]);
+assert.deepEqual((await callTool(viewer, "get_deal", { id: 1 })).result.deal.fields, {}, "deals without values have an empty fields object");
+const unknownField = await callTool(editor, "update_deal", { id: fieldDeal.result.id, fields: { Region: "West" } });
+assert.deepEqual({ status: unknownField.status, error: unknownField.error }, { status: 400, error: 'Unknown deal field "Region". Fields: Business driver, Deal type, Source campaign, Technical driver.' });
+const badOption = await callTool(owner, "create_deal", { name: "Bad option", nextStep: "Call", fields: { "Deal type": "Bake sale" } });
+assert.deepEqual({ status: badOption.status, error: badOption.error }, { status: 400, error: "Deal type must be one of: OPA Assessment, OPA Roadmap, COPA Demo, Consulting, Integration, Training, Support, Partner Opportunity, Other." });
+assert.equal(sqlite.prepare("SELECT count(*) AS n FROM deals WHERE name='Bad option'").get().n, 0, "invalid fields reject the whole create");
+for (const fields of ["COPA Demo", ["COPA Demo"], { "Deal type": { value: "COPA Demo" } }]) assert.equal((await callTool(editor, "update_deal", { id: fieldDeal.result.id, fields })).status, 400, JSON.stringify(fields));
+assert.equal((await callTool(editor, "update_deal", { id: fieldDeal.result.id, fields: { "Deal type": "Bake sale" }, nextStep: "Changed" })).status, 400);
+assert.equal(sqlite.prepare("SELECT next_step FROM deals WHERE id=?").get(fieldDeal.result.id).next_step, "Call", "invalid fields reject the whole update");
+assert.equal((await callTool(viewer, "update_deal", { id: fieldDeal.result.id, fields: { "Deal type": "Other" } })).status, 403);
+
 // sanitize
 assert.deepEqual(sanitize({ a: "b", share_token: "x", apiKeyHash: "y", nested: [{ password: "p", ok: 1 }] }), { a: "b", nested: [{ ok: 1 }] });
 console.log("PASS: MCP tools — catalogue, reads, permissions, writes, audit attribution, sanitising");

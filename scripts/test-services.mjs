@@ -145,4 +145,18 @@ assert.ok(soon.rows.some(r => r.id === soonDeal.id && r.kind === "deal") && soon
 const dealOnly = await reads.listTasks(db, { scope: "all", dealId: open.id, today: "2026-09-27" });
 assert.ok(dealOnly.rows.length === 2 && dealOnly.rows.every(r => r.kind === "deal" && r.dealId === open.id));
 for (const scope of ["mine", "overdue", "due_soon"]) { assert.deepEqual((await reads.listTasks(db, { scope, today: "2026-12-31" })).rows, [], scope + " without owners is empty"); assert.deepEqual((await reads.listTasks(db, { scope, owners: [], today: "2026-12-31" })).rows, []); }
+// custom field service: resolve by name or field_key (case-insensitive), validate like the CRM, read back keyed by field name
+const fields = load("lib/services/custom-fields.ts");
+sqlite.exec("INSERT INTO custom_field_definitions(entity_type,name,field_key,field_type,options,created_at) VALUES ('deal','Seats','seats','number','[]','now'),('deal','Renewal','renewal','date','[]','now'),('deal','Strategic','strategic','boolean','[]','now'),('contact','Tier','tier','text','[]','now')");
+const resolved = await fields.resolveCustomFields(db, "deal", { SEATS: 12, renewal: "2027-01-31", Strategic: true, "deal type": "copa demo" });
+const byName = Object.fromEntries(resolved.map(f => [f.name, f.value]));
+assert.deepEqual(byName, { Seats: "12", Renewal: "2027-01-31", Strategic: "true", "Deal type": "COPA Demo" });
+assert.deepEqual(await fields.resolveCustomFields(db, "deal", undefined), []);
+for (const [input, message] of [[{ Seats: "lots" }, /valid number/], [{ Renewal: "soon" }, /valid date/], [{ Strategic: "maybe" }, /Yes or No/], [{ Seats: "x".repeat(4001) }, /4,000/], [{ Tier: "Gold" }, /Unknown deal field "Tier"/], [null, /object/]]) await assert.rejects(fields.resolveCustomFields(db, "deal", input), e => e instanceof ServiceError && e.status === 400 && message.test(e.message), JSON.stringify(input));
+await db.batch(fields.customFieldStatements(db, "deal", open.id, resolved, "now"));
+assert.deepEqual((await fields.customFieldsByRecord(db, "deal", [open.id, big.id])).get(open.id), { "Deal type": "COPA Demo", Renewal: "2027-01-31", Seats: "12", Strategic: "true" });
+assert.deepEqual((await reads.listDeals(db, { q: "Open One" })).rows[0].fields, { "Deal type": "COPA Demo", Renewal: "2027-01-31", Seats: "12", Strategic: "true" });
+assert.deepEqual((await reads.dealDetail(db, big.id)).deal.fields, {});
+await db.batch(fields.customFieldStatements(db, "deal", open.id, [{ ...resolved[0], value: "" }], "now"));
+assert.ok(!("Seats" in (await reads.dealDetail(db, open.id)).deal.fields), "blank clears");
 console.log("PASS: read models");

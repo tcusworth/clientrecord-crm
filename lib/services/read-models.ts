@@ -1,3 +1,4 @@
+import { customFieldsByRecord } from "@/lib/services/custom-fields";
 import { pipelines } from "@/lib/services/deals";
 
 type Row = Record<string, unknown>;
@@ -17,7 +18,8 @@ export async function dealDetail(db: D1Database, id: number) {
     db.prepare("SELECT s.role,s.notes,s.contact_id AS contactId,c.first_name||' '||c.last_name AS name,c.email,c.title FROM deal_stakeholders s JOIN contacts c ON c.id=s.contact_id WHERE s.deal_id=? AND s.active=1 ORDER BY s.is_primary DESC,s.id LIMIT 50").bind(id),
     db.prepare("SELECT from_stage AS fromStage,to_stage AS toStage,actor,happened_at AS happenedAt FROM deal_stage_history WHERE deal_id=? ORDER BY happened_at DESC LIMIT 10").bind(id),
   ]);
-  return { deal: dollars(deal), notes: notes.results as Row[], activities: activities.results as Row[], tasks: tasks.results as Row[], stakeholders: stakeholders.results as Row[], stageHistory: stageHistory.results as Row[] };
+  const fields = (await customFieldsByRecord(db, "deal", [id])).get(id);
+  return { deal: { ...dollars(deal), fields }, notes: notes.results as Row[], activities: activities.results as Row[], tasks: tasks.results as Row[], stakeholders: stakeholders.results as Row[], stageHistory: stageHistory.results as Row[] };
 }
 
 export async function listDeals(db: D1Database, filter: { q?: string; stage?: string; owner?: string; status?: "Open" | "Won" | "Lost" | "All"; closingWithinDays?: number; stalledOnly?: boolean; offset?: number; limit?: number }) {
@@ -30,7 +32,8 @@ export async function listDeals(db: D1Database, filter: { q?: string; stage?: st
   if (filter.stalledOnly) { where.push(`d.status='Open' AND ${STALL}>=?`); binds.push(await stallDays(db)); }
   const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
   const [page, count] = await db.batch([db.prepare(`SELECT ${DEAL_COLUMNS} FROM deals d ${clause} ORDER BY d.updated_at DESC, d.id DESC LIMIT ? OFFSET ?`).bind(...binds, limit, offset), db.prepare(`SELECT count(*) AS n FROM deals d ${clause}`).bind(...binds)]);
-  return { rows: (page.results as Row[]).map(dollars), total: Number((count.results[0] as Row)?.n || 0), offset, limit };
+  const rows = page.results as Row[], fields = await customFieldsByRecord(db, "deal", rows.map(r => Number(r.id)));
+  return { rows: rows.map(r => ({ ...dollars(r), fields: fields.get(Number(r.id)) })), total: Number((count.results[0] as Row)?.n || 0), offset, limit };
 }
 
 export async function listTasks(db: D1Database, filter: { scope: "mine" | "overdue" | "due_soon" | "all"; owners?: string[]; contactId?: number; dealId?: number; limit?: number; today?: string }) {
