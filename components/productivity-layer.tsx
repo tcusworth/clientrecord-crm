@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { resolveSection } from "@/lib/navigation";
 
 type CommandContact={id:number;firstName:string;lastName:string;email:string;company:string;title:string};
 type CommandCompany={id:number;name:string;stage:string};
@@ -61,7 +62,7 @@ export function ProductivityLayer({onNavigate,onContact,onCreate,onCommitted}:Pr
     {commandDraft&&<CommandGroup heading="Parsed draft"><CommandItem value={`Create ${query}`} onSelect={()=>{setOpen(false);setDraft(commandDraft)}}><Check/><span className="min-w-0 flex-1 truncate">Review and create: {query}</span><CommandShortcut>Enter</CommandShortcut></CommandItem></CommandGroup>}
     <CommandGroup heading="Create and log">{actionItems.map(item=>{const Icon=item.icon;return <CommandItem key={item.kind} value={`${item.label} ${item.hint}`} onSelect={()=>run(item.kind)}><Icon/><span>{item.label}</span><span className="ml-auto text-xs text-slate-500">{item.hint}</span></CommandItem>})}</CommandGroup>
     <CommandSeparator/>
-    {recent.length>0&&<CommandGroup heading="Recent">{recent.map(item=><CommandItem key={`${item.kind}:${item.id}`} value={`Recent ${item.label}`} onSelect={()=>{if(item.kind==="contact"){setOpen(false);onContact({id:Number(item.id)})}else go(item.id,item.label)}}><RotateCcw/><span>{item.label}</span></CommandItem>)}</CommandGroup>}
+    {recent.length>0&&<CommandGroup heading="Recent">{recent.map(item=><CommandItem key={`${item.kind}:${item.id}`} value={`Recent ${item.label}`} onSelect={()=>{if(item.kind==="contact"){setOpen(false);onContact({id:Number(item.id)})}else go(resolveSection(item.id)??item.id,item.label)}}><RotateCcw/><span>{item.label}</span></CommandItem>)}</CommandGroup>}
     <CommandGroup heading="Saved views">{[["deals","At risk"],["deals","Closing this month"],["contacts","Needs follow-up"],["contacts","Quiet 30+ days"]].map(([section,label])=><CommandItem key={label} value={`Saved view ${label}`} onSelect={()=>{localStorage.setItem(`clientrecord:${section}-saved-view`,label);go(section,label)}}><FileText/><span>{label}</span><span className="ml-auto text-xs text-slate-500">{section}</span></CommandItem>)}</CommandGroup>
     <CommandGroup heading="Go to">{[["today","Today"],["dashboard","Dashboard"],["contacts","Contacts"],["companies","Companies"],["deals","Deals"],["documents","Documents"],["settings","Settings"]].map(([id,label])=><CommandItem key={id} value={`Go to ${label}`} onSelect={()=>go(id,label)}><Keyboard/><span>{label}</span>{label==="Today"&&<CommandShortcut>G T</CommandShortcut>}</CommandItem>)}</CommandGroup>
     <CommandSeparator/>
