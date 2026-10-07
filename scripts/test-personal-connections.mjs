@@ -55,6 +55,7 @@ console.log("PASS: personal connections schema");
   assert.equal(accounts.canManageAll({ ...user("admin"), permissions: ["integrations.manage"] }), true);
   sqlite.exec("DELETE FROM integration_accounts");
 
+  sqlite.exec("DELETE FROM oauth_states");
   // Callbacks: stub token + profile calls; never hit real endpoints.
   let tokenResponse = {};
   globalThis.fetch = async (url) => {
@@ -65,7 +66,7 @@ console.log("PASS: personal connections schema");
     throw new Error(`Unexpected fetch ${u}`);
   };
   const newState = actor => { const s = crypto.randomUUID(); sqlite.prepare("INSERT INTO oauth_states(state,actor_email,expires_at,created_at) VALUES (?,?,datetime('now','+10 minutes'),datetime('now'))").run(s, actor); return s; };
-  const callback = async (provider, actor) => (await load(`app/api/${provider}/callback/route.ts`).GET(new Request(`https://crm.example.com/api/${provider}/callback?code=c&state=${newState(actor)}`))).headers.get("location");
+  const callback = async (provider, actor, signedIn = actor) => (await load(`app/api/${provider}/callback/route.ts`).GET(new Request(`https://crm.example.com/api/${provider}/callback?code=c&state=${newState(actor)}`, { headers: signedIn ? headers(signedIn.toLowerCase()) : {} }))).headers.get("location");
 
   for (const provider of ["microsoft", "google"]) {
     tokenResponse = { access_token: `${provider}-acc`, refresh_token: `${provider}-ref`, expires_in: 3600, scope: "x" };
@@ -81,7 +82,15 @@ console.log("PASS: personal connections schema");
     const before = rows().length;
     assert.match(await callback(provider, "gone@example.com"), new RegExp(`integration=${provider}_error`));
     assert.match(await callback(provider, "stranger@example.com"), new RegExp(`integration=${provider}_error`));
+    // Session binding: the signed-in browser must be the person who started the connect.
+    assert.match(await callback(provider, "editor@example.com", "mixed@example.com"), new RegExp(`integration=${provider}_error`), `${provider}: different signed-in user refused`);
+    assert.match(await callback(provider, "editor@example.com", null), new RegExp(`integration=${provider}_error`), `${provider}: no session refused`);
+    // Actor downgraded to viewer while the state was outstanding.
+    sqlite.exec("UPDATE team_members SET role='viewer' WHERE email='Mixed@Example.com'");
+    assert.match(await callback(provider, "Mixed@Example.com"), new RegExp(`integration=${provider}_error`), `${provider}: downgraded actor refused`);
+    sqlite.exec("UPDATE team_members SET role='editor' WHERE email='Mixed@Example.com'");
     assert.equal(rows().length, before, `${provider}: refused states write nothing`);
+    assert.equal(sqlite.prepare("SELECT count(*) AS n FROM oauth_states").get().n, 0, `${provider}: refused states are still consumed`);
   }
 
   // Microsoft without a refresh token: only the actor's own stored token counts.
