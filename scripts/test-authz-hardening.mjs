@@ -26,12 +26,12 @@ const failures = [];
 async function part(name, fn) { try { await fn(); console.log(`  ok   ${name}`); } catch (error) { failures.push(name); console.log(`  FAIL ${name}\n       ${String(error?.message || error).split("\n").slice(0, 4).join("\n       ")}`); } }
 const artifactSensitive = id => sqlite.prepare("SELECT sensitive FROM ai_artifacts WHERE id=?").get(id).sensitive;
 
-// #8 Mailbox sync reads the org-wide connected mailbox: integrations.manage only.
-await part("#8 mailbox sync requires integrations.manage", async () => {
+// #8 Mailbox sync now syncs the caller's OWN connected mailbox (personal connections): records.edit, so viewers are refused.
+await part("#8 mailbox sync requires records.edit", async () => {
   for (const provider of ["google", "microsoft"]) {
     const route = call(load(`app/api/${provider}/sync/route.ts`), `${provider}/sync`);
-    await expectStatus(route.post(editor, {}), 403, `${provider} editor`);
-    for (const email of [admin, owner]) assert.notEqual((await route.post(email, {})).status, 403, `${provider} ${email} passes the permission check`);
+    await expectStatus(route.post(viewer, {}), 403, `${provider} viewer`);
+    for (const email of [editor, admin, owner]) assert.notEqual((await route.post(email, {})).status, 403, `${provider} ${email} passes the permission check`);
   }
 });
 

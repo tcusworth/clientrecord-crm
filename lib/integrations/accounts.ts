@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { can, type CRMUser } from "@/lib/crm-auth";
+import { can, userByEmail, type CRMUser } from "@/lib/crm-auth";
 
 export type Provider = "microsoft" | "google";
 export type IntegrationAccount = { id: number; provider: Provider; user_email: string; account_email: string; access_token: string; refresh_token: string; expires_at: string; scopes: string; sync_email: number; sync_calendar: number; auto_tasks: number; last_synced_at: string | null; status: string };
@@ -24,6 +24,23 @@ export async function upsertPersonalAccount(input: { provider: Provider; userEma
     .bind(input.provider, input.userEmail.trim().toLowerCase(), input.accountEmail, input.accessTokenEnc, input.refreshTokenEnc, input.expiresAt, input.scopes).first<{ id: number }>();
   return Number(row?.id);
 }
+
+// Sync helpers shared by microsoft-sync and google-sync.
+export type SyncResult = { accountId: number; emails: number; events: number; skipped: number; reviewQueued: number };
+// The account's tokens no longer work (or its owner left the CRM): the owner must reconnect.
+export class ReconnectRequired extends Error {}
+export async function needsReconnect(id: number, message: string): Promise<never> {
+  await env.DB.prepare("UPDATE integration_accounts SET status='needs_reconnect',updated_at=datetime('now') WHERE id=?").bind(id).run();
+  throw new ReconnectRequired(message);
+}
+// Sync runs as the mailbox owner; an account whose owner is no longer an active CRM member is flagged instead.
+export async function syncOwner(account: IntegrationAccount) {
+  return await userByEmail(account.user_email) || needsReconnect(account.id, `${account.user_email} is no longer an active CRM member; reconnect required.`);
+}
+// Token endpoint said the grant is gone (invalid_grant) or refused us outright (401).
+export const grantRejected = (error: unknown) => { const e = error as { code?: string; status?: number } | null; return e?.code === "invalid_grant" || e?.status === 401; };
+export const unauthorized = (error: unknown) => (error as { status?: number } | null)?.status === 401;
+export async function markSynced(id: number) { await env.DB.prepare("UPDATE integration_accounts SET last_synced_at=datetime('now'),status='connected',updated_at=datetime('now') WHERE id=?").bind(id).run(); }
 
 // Browser binding for the OAuth round trip: connect sets a short-lived cookie holding the state, the callback requires it.
 // Lax so it rides the top-level redirect back from the provider; the callback path bypasses Cloudflare Access.

@@ -18,7 +18,8 @@ async function readAll(user: NonNullable<Awaited<ReturnType<typeof crmUser>>>) {
     env.DB.prepare("SELECT id,definition_id AS definitionId,entity_type AS entityType,entity_id AS entityId,value,updated_at AS updatedAt FROM custom_field_values").all(),
     env.DB.prepare("SELECT id,email,name,role,active,created_at AS createdAt,updated_at AS updatedAt FROM team_members ORDER BY role,email").all(),
     env.DB.prepare("SELECT id,actor_email AS actorEmail,action,entity_type AS entityType,entity_id AS entityId,summary,changes,created_at AS createdAt FROM audit_logs ORDER BY created_at DESC LIMIT 250").all(),
-    env.DB.prepare("SELECT provider,account_email AS accountEmail,last_synced_at AS lastSyncedAt FROM integration_accounts WHERE provider='microsoft'").first<Record<string, unknown>>(),
+    // The caller's own Microsoft connection (connections are per user).
+    env.DB.prepare("SELECT provider,account_email AS accountEmail,last_synced_at AS lastSyncedAt FROM integration_accounts WHERE provider='microsoft' AND user_email=?").bind(user.email.trim().toLowerCase()).first<Record<string, unknown>>(),
   ]);
   const dealRows = deals.results as Array<Record<string, unknown>>;
   const won = dealRows.filter(d => d.status === "Won");

@@ -25,7 +25,7 @@ export async function exchangeCode(origin: string, code: string) {
 export async function refreshMicrosoft(refreshToken: string) {
   const body = new URLSearchParams({ client_id: String(env.MS_CLIENT_ID), client_secret: String(env.MS_CLIENT_SECRET), grant_type: "refresh_token", refresh_token: refreshToken, scope: "offline_access User.Read Mail.Read Calendars.Read" });
   const response = await fetch(`https://login.microsoftonline.com/${tenant()}/oauth2/v2.0/token`, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body });
-  const data = await response.json() as Record<string, unknown>; if (!response.ok) throw new Error(String(data.error_description || "Microsoft token refresh failed.")); return data;
+  const data = await response.json() as Record<string, unknown>; if (!response.ok) throw Object.assign(new Error(String(data.error_description || "Microsoft token refresh failed.")), { code: String(data.error || ""), status: response.status }); return data;
 }
 
-export async function graph(path: string, token: string) { const response = await fetch(`https://graph.microsoft.com/v1.0${path}`, { headers: { authorization: `Bearer ${token}`, Prefer: 'outlook.timezone="UTC"' } }); const data = await response.json() as Record<string, unknown>; if (!response.ok) throw new Error(String((data.error as { message?: string } | undefined)?.message || "Microsoft Graph request failed.")); return data; }
+export async function graph(path: string, token: string) { const response = await fetch(`https://graph.microsoft.com/v1.0${path}`, { headers: { authorization: `Bearer ${token}`, Prefer: 'outlook.timezone="UTC"' } }); const data = await response.json() as Record<string, unknown>; if (!response.ok) throw Object.assign(new Error(String((data.error as { message?: string } | undefined)?.message || "Microsoft Graph request failed.")), { status: response.status }); return data; }
