@@ -68,4 +68,14 @@ const sales = load("app/api/sales/route.ts");
 const payload = await (await sales.GET(new Request("https://crm.example.com/api/sales", { headers }))).json();
 assert.equal(payload.mainPipelineId, "csi");
 
+// Free-text company with no linked record survives a save (e.g. a board drag); a linked company still wins.
+const textOnly = await deals.saveDeal(env.DB, { name: "Text company deal", owner, pipeline_key: "csi", stage_key: "target", next_step: "Call", company: "Globex" }, owner);
+assert.equal(deal(textOnly.id).company, "Globex");
+assert.equal(deal(textOnly.id).company_id, null);
+await deals.saveDeal(env.DB, { id: textOnly.id, name: "Text company deal", owner, pipeline_key: "csi", stage_key: "target", next_step: "Call again", company: "Globex", company_id: null }, owner);
+assert.equal(deal(textOnly.id).company, "Globex", "re-saving keeps the company text");
+await deals.saveDeal(env.DB, { id: textOnly.id, name: "Text company deal", owner, pipeline_key: "csi", stage_key: "target", next_step: "Call", company: "Globex", company_id: 1 }, owner);
+assert.equal(deal(textOnly.id).company, "Acme", "a linked company record sets the name");
+assert.equal(deal(textOnly.id).company_id, 1);
+
 console.log("PASS: main pipeline rule");
