@@ -22,7 +22,7 @@ INSERT INTO deals(id,name,company,company_id,contact_id,stage,stage_key,pipeline
     return accounts.ownAccount(provider, userEmail);
   };
 
-  // Canned provider responses: one email from a seeded contact, one from an unknown sender, one meeting with the contact.
+  // Canned provider responses: one email from a seeded contact, one sent by the owner to an unknown address, one meeting with the contact.
   let tokenReply = () => Response.json({ access_token: "fresh", expires_in: 3600 });
   let apiStatus = 200;
   const calls = [];
@@ -33,14 +33,14 @@ INSERT INTO deals(id,name,company,company_id,contact_id,stage,stage_key,pipeline
     if (u.startsWith("https://graph.microsoft.com/v1.0/me?")) return Response.json({ mail: "box@corp.com" });
     if (u.startsWith("https://graph.microsoft.com/v1.0/me/messages?")) return Response.json({ value: [
       { id: "m1", conversationId: "c1", subject: "Pricing question", bodyPreview: "Can you send pricing?", from: { emailAddress: { address: "Client@Acme.test" } }, toRecipients: [{ emailAddress: { address: "box@corp.com" } }], receivedDateTime: past(1), hasAttachments: false },
-      { id: "m2", conversationId: "c2", subject: "Hello there", bodyPreview: "Intro", from: { emailAddress: { address: "stranger@unknown.test" } }, toRecipients: [{ emailAddress: { address: "box@corp.com" } }], receivedDateTime: past(1), hasAttachments: false },
+      { id: "m2", conversationId: "c2", subject: "Hello there", bodyPreview: "Intro", from: { emailAddress: { address: "box@corp.com" } }, toRecipients: [{ emailAddress: { address: "stranger@unknown.test" } }], receivedDateTime: past(1), hasAttachments: false },
     ] });
     if (u.startsWith("https://graph.microsoft.com/v1.0/me/calendarView?")) return Response.json({ value: [
       { id: "e1", subject: "Discovery call", start: { dateTime: past(2) }, end: { dateTime: past(2) }, organizer: { emailAddress: { address: "box@corp.com" } }, attendees: [{ emailAddress: { address: "client@acme.test" } }] },
     ] });
     if (u.startsWith("https://gmail.googleapis.com/gmail/v1/users/me/messages?")) return Response.json({ messages: [{ id: "g1" }, { id: "g2" }] });
     if (u.startsWith("https://gmail.googleapis.com/gmail/v1/users/me/messages/g1?")) return Response.json({ id: "g1", threadId: "t1", internalDate: String(Date.now() - 86400000), payload: { headers: [{ name: "From", value: "Casey <client@acme.test>" }, { name: "To", value: "box@corp.com" }, { name: "Subject", value: "Pricing question" }] } });
-    if (u.startsWith("https://gmail.googleapis.com/gmail/v1/users/me/messages/g2?")) return Response.json({ id: "g2", threadId: "t2", internalDate: String(Date.now() - 86400000), payload: { headers: [{ name: "From", value: "stranger@unknown.test" }, { name: "To", value: "box@corp.com" }, { name: "Subject", value: "Hello there" }] } });
+    if (u.startsWith("https://gmail.googleapis.com/gmail/v1/users/me/messages/g2?")) return Response.json({ id: "g2", threadId: "t2", internalDate: String(Date.now() - 86400000), payload: { headers: [{ name: "From", value: "box@corp.com" }, { name: "To", value: "stranger@unknown.test" }, { name: "Subject", value: "Hello there" }] } });
     if (u.startsWith("https://www.googleapis.com/calendar/v3/calendars/primary/events?")) return Response.json({ items: [
       { id: "ge1", summary: "Discovery call", start: { dateTime: past(2) }, end: { dateTime: past(2) }, organizer: { email: "box@corp.com" }, attendees: [{ email: "client@acme.test" }] },
     ] });

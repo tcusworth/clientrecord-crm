@@ -113,7 +113,7 @@ const plain = globalThis.fetch;
 globalThis.fetch = async (url, ...rest) => {
   const u = String(url);
   if (u.startsWith("https://gmail.googleapis.com/gmail/v1/users/me/messages?")) return Response.json({ messages: [{ id: "g9" }] });
-  if (u.startsWith("https://gmail.googleapis.com/gmail/v1/users/me/messages/g9?")) return Response.json({ id: "g9", threadId: "t9", internalDate: String(Date.now() - 86400000), payload: { headers: [{ name: "From", value: "stranger@unknown.test" }, { name: "To", value: "good@example.com.box" }, { name: "Subject", value: "Hello" }] } });
+  if (u.startsWith("https://gmail.googleapis.com/gmail/v1/users/me/messages/g9?")) return Response.json({ id: "g9", threadId: "t9", internalDate: String(Date.now() - 86400000), payload: { headers: [{ name: "From", value: "good@example.com.box" }, { name: "To", value: "stranger@unknown.test" }, { name: "Subject", value: "Hello" }] } });
   return plain(url, ...rest);
 };
 sqlite.prepare("UPDATE integration_accounts SET last_synced_at=NULL").run();
