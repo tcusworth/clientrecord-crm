@@ -6,7 +6,8 @@ export type IntegrationAccount = { id: number; provider: Provider; user_email: s
 const COLUMNS = "id,provider,user_email,account_email,access_token,refresh_token,expires_at,scopes,sync_email,sync_calendar,auto_tasks,last_synced_at,status";
 
 // Connect / sync / disconnect your OWN Google or Microsoft account.
-export function canConnectOwn(user: CRMUser) { return can(user, "records.edit"); }
+// API-key principals ("api:" ids) have no mailbox of their own and never act on personal connections.
+export function canConnectOwn(user: CRMUser) { return !user.id.startsWith("api:") && can(user, "records.edit"); }
 // See every personal connection and disconnect anyone's.
 export function canManageAll(user: CRMUser) { return can(user, "integrations.manage"); }
 

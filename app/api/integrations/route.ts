@@ -45,7 +45,7 @@ export async function POST(request:Request){
     if((action==="savePreferences"||action==="disconnect")&&!["quickbooks"].includes(clean(body.provider))){
       const id=Number(body.id),account=Number.isInteger(id)&&id>0?await accountById(id):null;
       if(!account||!["google","microsoft"].includes(account.provider))return Response.json({error:"Connection not found."},{status:404});
-      if(!canManageAll(user)&&!(canConnectOwn(user)&&account.user_email===user.email.trim().toLowerCase()))return Response.json({error:"Integration access is required."},{status:403});
+      if(user.id.startsWith("api:")||!canManageAll(user)&&!(canConnectOwn(user)&&account.user_email===user.email.trim().toLowerCase()))return Response.json({error:"Integration access is required."},{status:403});
       if(action==="savePreferences"){await env.DB.prepare("UPDATE integration_accounts SET sync_email=?,sync_calendar=?,auto_tasks=?,updated_at=datetime('now') WHERE id=?").bind(body.syncEmail?1:0,body.syncCalendar?1:0,body.autoTasks?1:0,id).run();await audit(user,"integration.preferences","integration",id,`Updated ${account.provider} synchronization preferences`,{provider:account.provider,userEmail:account.user_email,syncEmail:body.syncEmail,syncCalendar:body.syncCalendar,autoTasks:body.autoTasks});return Response.json({status:"saved"});}
       const revocation=await revokeAtProvider(account.provider,id);await env.DB.prepare("DELETE FROM integration_accounts WHERE id=?").bind(id).run();await audit(user,"integration.disconnect","integration",id,`Disconnected ${account.provider} for ${account.user_email}`,{provider:account.provider,userEmail:account.user_email,by:user.email,revocation});return Response.json({status:"disconnected",revocation});
     }
