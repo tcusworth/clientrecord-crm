@@ -80,17 +80,17 @@ OAuth redirect URIs follow `https://<host>/api/{google,microsoft,quickbooks}/cal
 
 Each person connects their own Google or Microsoft 365 account under **More → Email & calendar**. Viewers can't connect. Owners and admins also see **Team connections** and can disconnect anyone. **Settings → Integrations** keeps QuickBooks and Meetily and points to the Email & calendar screen for Google and Microsoft.
 
-- Synced mail and calendar items are visible to everyone in the CRM and labelled with the mailbox owner.
+- Synced mail and calendar items are visible to everyone in the CRM and labelled with the mailbox owner. A meeting several people attend is stored once; an email between two connected teammates can appear once per mailbox.
 - Scopes are read-only (Gmail and Calendar read-only; Microsoft `Mail.Read` and `Calendars.Read`). API keys can't act on personal connections.
 - Sync runs automatically every hour from the Cron Trigger. While the cron isn't firing, the daily page-load maintenance starts a background sync instead. Accounts synced in the last 50 minutes are skipped, accounts with status `needs_reconnect` are skipped until the person reconnects, and overlapping runs back off.
 
 Rollout:
 
 1. Deploy (`pnpm run deploy`); migration 0031 applies automatically.
-2. Add the OAuth redirect URIs `https://clientrecordcrm.com/api/microsoft/callback` (Entra app registration) and `https://clientrecordcrm.com/api/google/callback` (Google Cloud console).
+2. Add the OAuth redirect URIs `https://clientrecordcrm.com/api/microsoft/callback` (Entra app registration) and `https://clientrecordcrm.com/api/google/callback` (Google Cloud console). If people also use `new.clientrecordcrm.com`, add the same two paths on that host too: connecting must finish on the host where it started.
 3. Set the Worker secrets `MS_CLIENT_ID`, `MS_CLIENT_SECRET`, `MS_TENANT_ID`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, plus `CRM_TOKEN_ENCRYPTION_KEY` if it isn't already set.
 4. Grant Microsoft 365 admin consent for `Mail.Read` and `Calendars.Read` if CSI's tenant requires it.
-5. Confirm the Cloudflare Access bypass application still includes `/api/google/callback` and `/api/microsoft/callback` (see the bypass list under [Moving off OpenAI Sites](#moving-off-openai-sites)).
+5. Confirm the Cloudflare Access bypass application for each host still includes `/api/google/callback` and `/api/microsoft/callback` (see the bypass list under [Moving off OpenAI Sites](#moving-off-openai-sites)).
 
 ## Authentication
 
