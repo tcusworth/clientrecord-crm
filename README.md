@@ -2,6 +2,10 @@
 
 A one-page CRM (contacts, companies, deals and pipelines, activities, campaigns, proposals, customer success, AI-assisted workflows) that runs as a single [vinext](https://github.com/cloudflare/vinext) (Next.js App Router on Vite) app on **Cloudflare Workers**, with **D1** (SQLite) for data and **R2** for documents and transcripts.
 
+## Navigation
+
+The menu has three groups: **Main** (Today, Deals, Companies, Contacts, Lead capture, Proposals, Customer success, Documents, Activity, Service cases, Sales analytics), a collapsed **More** (Dashboard, Inbox, Campaigns, Automations and other secondary screens) and **Admin** (owners/admins only: Integrations, Operations, Settings and similar). CSI is the single main pipeline (the first saved pipeline; the built-in "New business" pipeline exists only on a fresh install) and every deal-creating path uses it. There is one Deals screen (board, table, deal drawer); owners and admins edit stages with "Configure stages". The old Pipelines screen is gone and `?view=pipelines` opens Deals.
+
 ## Local development
 
 Requires Node.js `>=22.13.0` and pnpm (version pinned in `packageManager`).
