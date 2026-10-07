@@ -31,6 +31,7 @@ console.log("PASS: personal connections schema");
     assert.equal(res.status, 302, `${provider} editor connect redirects`);
     const state = new URL(res.headers.get("location")).searchParams.get("state");
     assert.equal(sqlite.prepare("SELECT actor_email FROM oauth_states WHERE state=?").get(state).actor_email, "editor@example.com");
+    assert.equal(res.headers.get("set-cookie"), `__Host-cr_oauth_${provider}=${state}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=600`, `${provider} connect binds the browser`);
     assert.equal((await connect.GET(new Request(`https://crm.example.com/api/${provider}/connect`, { headers: headers("viewer@example.com") }))).status, 403, `${provider} viewer gets 403`);
   }
 
@@ -66,12 +67,19 @@ console.log("PASS: personal connections schema");
     throw new Error(`Unexpected fetch ${u}`);
   };
   const newState = actor => { const s = crypto.randomUUID(); sqlite.prepare("INSERT INTO oauth_states(state,actor_email,expires_at,created_at) VALUES (?,?,datetime('now','+10 minutes'),datetime('now'))").run(s, actor); return s; };
-  const callback = async (provider, actor, signedIn = actor) => (await load(`app/api/${provider}/callback/route.ts`).GET(new Request(`https://crm.example.com/api/${provider}/callback?code=c&state=${newState(actor)}`, { headers: signedIn ? headers(signedIn.toLowerCase()) : {} }))).headers.get("location");
+  // Default: the callback path bypasses Access (no session) and the browser carries the matching state cookie.
+  let lastCookie = "";
+  const callback = async (provider, actor, { signedIn = null, cookie = s => s } = {}) => {
+    const state = newState(actor), c = cookie(state);
+    const res = await load(`app/api/${provider}/callback/route.ts`).GET(new Request(`https://crm.example.com/api/${provider}/callback?code=c&state=${state}`, { headers: { ...(signedIn ? headers(signedIn) : {}), ...(c == null ? {} : { cookie: `other=1; __Host-cr_oauth_${provider}=${c}` }) } }));
+    lastCookie = res.headers.get("set-cookie"); return res.headers.get("location");
+  };
 
   for (const provider of ["microsoft", "google"]) {
     tokenResponse = { access_token: `${provider}-acc`, refresh_token: `${provider}-ref`, expires_in: 3600, scope: "x" };
     assert.match(await callback(provider, "Mixed@Example.com"), new RegExp(`integration=${provider}_connected`));
-    assert.match(await callback(provider, "editor@example.com"), new RegExp(`integration=${provider}_connected`));
+    assert.match(await callback(provider, "editor@example.com", { signedIn: "editor@example.com" }), new RegExp(`integration=${provider}_connected`), `${provider}: matching cookie + matching session succeeds`);
+    assert.match(lastCookie, /Max-Age=0$/, `${provider}: success clears the cookie`);
     const mine = rows().filter(r => r.provider === provider);
     assert.deepEqual(mine.map(r => r.user_email).sort(), ["editor@example.com", "mixed@example.com"], `${provider}: one row per CRM user, lowercased`);
     assert.equal(await decryptToken(mine[0].refresh_token), `${provider}-ref`);
@@ -82,9 +90,11 @@ console.log("PASS: personal connections schema");
     const before = rows().length;
     assert.match(await callback(provider, "gone@example.com"), new RegExp(`integration=${provider}_error`));
     assert.match(await callback(provider, "stranger@example.com"), new RegExp(`integration=${provider}_error`));
-    // Session binding: the signed-in browser must be the person who started the connect.
-    assert.match(await callback(provider, "editor@example.com", "mixed@example.com"), new RegExp(`integration=${provider}_error`), `${provider}: different signed-in user refused`);
-    assert.match(await callback(provider, "editor@example.com", null), new RegExp(`integration=${provider}_error`), `${provider}: no session refused`);
+    // Browser binding: the state cookie must be present and match; a signed-in identity, if any, must be the actor.
+    assert.match(await callback(provider, "editor@example.com", { cookie: () => null }), new RegExp(`integration=${provider}_error`), `${provider}: missing cookie refused`);
+    assert.match(await callback(provider, "editor@example.com", { cookie: () => crypto.randomUUID() }), new RegExp(`integration=${provider}_error`), `${provider}: wrong cookie refused`);
+    assert.match(await callback(provider, "editor@example.com", { signedIn: "mixed@example.com" }), new RegExp(`integration=${provider}_error`), `${provider}: different signed-in user refused`);
+    assert.equal(lastCookie, `__Host-cr_oauth_${provider}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0`, `${provider}: refusal clears the cookie`);
     // Actor downgraded to viewer while the state was outstanding.
     sqlite.exec("UPDATE team_members SET role='viewer' WHERE email='Mixed@Example.com'");
     assert.match(await callback(provider, "Mixed@Example.com"), new RegExp(`integration=${provider}_error`), `${provider}: downgraded actor refused`);

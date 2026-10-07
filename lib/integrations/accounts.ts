@@ -24,3 +24,14 @@ export async function upsertPersonalAccount(input: { provider: Provider; userEma
     .bind(input.provider, input.userEmail.trim().toLowerCase(), input.accountEmail, input.accessTokenEnc, input.refreshTokenEnc, input.expiresAt, input.scopes).first<{ id: number }>();
   return Number(row?.id);
 }
+
+// Browser binding for the OAuth round trip: connect sets a short-lived cookie holding the state, the callback requires it.
+// Lax so it rides the top-level redirect back from the provider; the callback path bypasses Cloudflare Access.
+const stateCookie = (provider: Provider) => `__Host-cr_oauth_${provider}`;
+export function oauthRedirect(location: URL | string, provider: Provider, state = "") {
+  return new Response(null, { status: 302, headers: { location: String(location), "set-cookie": `${stateCookie(provider)}=${state}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${state ? 600 : 0}` } });
+}
+export function oauthStateFromCookie(request: Request, provider: Provider) {
+  const name = `${stateCookie(provider)}=`;
+  return (request.headers.get("cookie") || "").split(";").map(part => part.trim()).find(part => part.startsWith(name))?.slice(name.length) || "";
+}
