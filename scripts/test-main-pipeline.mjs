@@ -7,7 +7,7 @@ const fresh = await deals.mainPipeline(env.DB);
 assert.equal(fresh.id, "default", "fresh install falls back to the built-in pipeline");
 assert.deepEqual((await deals.pipelines(env.DB)).map(p => p.id), ["default"]);
 
-const stages = JSON.stringify([{ key: "target", name: "Target", probability: 10, kind: "Open" }, { key: "won", name: "Won", probability: 100, kind: "Won" }, { key: "lost", name: "Lost", probability: 0, kind: "Lost" }]);
+const stages = JSON.stringify([{ key: "target", name: "Target", probability: 10, kind: "Open" }, { key: "won", name: "Won", probability: 100, kind: "Won" }, { key: "lost", name: "Closed lost", probability: 0, kind: "Lost" }]);
 sqlite.prepare("INSERT INTO sales_pipelines(id,name,stages,updated_at) VALUES ('csi','CSI pipeline',?, 'now')").run(stages);
 sqlite.prepare("INSERT INTO sales_pipelines(id,name,stages,updated_at) VALUES ('aaa','AAA later',?, 'now')").run(stages);
 assert.equal((await deals.mainPipeline(env.DB)).id, "csi", "first saved by rowid, not by name");
@@ -50,6 +50,16 @@ const apiDeal = deal(Number((await response.json()).id));
 assert.equal(apiDeal.pipeline_key, "csi");
 assert.equal(apiDeal.stage_key, "target");
 assert.equal(apiDeal.stage, "Target");
+// A given stage (name or key, any case) is matched within the main pipeline; an unknown stage falls back to the first Open stage.
+response = await v1({ name: "API won deal", stage: "WON" });
+const apiWon = deal(Number((await response.json()).id));
+assert.deepEqual([apiWon.pipeline_key, apiWon.stage_key, apiWon.stage, apiWon.status, apiWon.probability], ["csi", "won", "Won", "Won", 100], "a stage name is matched case-insensitively");
+response = await v1({ name: "API lost deal", stage: "lost" });
+const apiLost = deal(Number((await response.json()).id));
+assert.deepEqual([apiLost.stage_key, apiLost.stage, apiLost.status, apiLost.probability], ["lost", "Closed lost", "Lost", 0], "a stage key is matched (and a 0% stage keeps 0)");
+response = await v1({ name: "API unknown stage", stage: "Negotiation" });
+const apiUnknown = deal(Number((await response.json()).id));
+assert.deepEqual([apiUnknown.pipeline_key, apiUnknown.stage_key, apiUnknown.status], ["csi", "target", "Open"], "an unknown stage falls back to the first Open stage");
 response = await v1({ name: "API deal elsewhere", pipelineKey: "aaa", stage: "Won" });
 assert.equal(response.status, 201);
 assert.equal(deal(Number((await response.json()).id)).pipeline_key, "aaa", "an explicit pipeline is kept");
