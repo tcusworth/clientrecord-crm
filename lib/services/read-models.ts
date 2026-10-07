@@ -1,5 +1,6 @@
 import { customFieldsByRecord } from "@/lib/services/custom-fields";
 import { pipelines } from "@/lib/services/deals";
+import { defaultPipeline } from "@/lib/sales-rules";
 
 type Row = Record<string, unknown>;
 const cap = (n: unknown, max = 25, fallback = 25) => Math.max(1, Math.min(max, Number(n) || fallback));
@@ -63,7 +64,7 @@ export async function pipelineSummary(db: D1Database) {
   ]);
   const rows = groups.results as Row[], rank = (key: string) => { const i = known.findIndex(p => p.id === key); return i < 0 ? known.length : i; };
   const byPipeline = [...new Set(rows.map(r => String(r.pipelineKey)))].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b)).map(key => {
-    const pipe = known.find(p => p.id === key), stages = new Map<string, { order: number; stage: string; count: number; value: number }>(); let open = 0, weighted = 0;
+    const pipe = known.find(p => p.id === key) ?? (key === "default" ? defaultPipeline : undefined), stages = new Map<string, { order: number; stage: string; count: number; value: number }>(); let open = 0, weighted = 0;
     for (const r of rows.filter(r => String(r.pipelineKey) === key)) {
       const k = String(r.stageKey).toLowerCase(), i = pipe ? pipe.stages.findIndex(s => s.key.toLowerCase() === k || s.name.toLowerCase() === k) : -1, name = i < 0 ? String(r.stage) : pipe!.stages[i].name, prev = stages.get(name);
       stages.set(name, { order: i < 0 ? Number.MAX_SAFE_INTEGER : i, stage: name, count: (prev?.count || 0) + Number(r.count), value: (prev?.value || 0) + Number(r.value) }); open += Number(r.value); weighted += Number(r.weighted);

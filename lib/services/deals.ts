@@ -9,9 +9,19 @@ const isDate = (v: string) => /^\d{4}-\d{2}-\d{2}$/.test(v) && Number.isFinite(D
 const need = (v: unknown, label: string) => { const t = str(v); if (!t || t.length > 4000) throw new ServiceError(label + " is required (maximum 4,000 characters)."); return t; };
 
 export async function pipelines(db: D1Database): Promise<Pipeline[]> {
-  const saved = (await db.prepare("SELECT * FROM sales_pipelines ORDER BY name").all<Row>()).results;
+  const saved = (await db.prepare("SELECT * FROM sales_pipelines ORDER BY rowid").all<Row>()).results;
   const list = saved.map(r => ({ id: String(r.id), name: String(r.name), stages: JSON.parse(String(r.stages)) }));
-  return list.some(p => p.id === "default") ? list : [defaultPipeline, ...list];
+  return list.length ? list : [defaultPipeline];
+}
+
+// The single pipeline this install works in: the first saved one, or the built-in pipeline on a fresh install.
+export async function mainPipeline(db: D1Database): Promise<Pipeline> {
+  return (await pipelines(db))[0];
+}
+
+// A pipeline by id; legacy deals on the unsaved built-in pipeline ('default') still resolve so they stay editable.
+export async function findPipeline(db: D1Database, id: string): Promise<Pipeline | undefined> {
+  return (await pipelines(db)).find(p => p.id === id) ?? (id === "default" ? defaultPipeline : undefined);
 }
 
 export async function dealRecord(db: D1Database, dealId: number): Promise<Row> {
@@ -23,7 +33,7 @@ export async function dealRecord(db: D1Database, dealId: number): Promise<Row> {
 export async function saveDeal(db: D1Database, input: DealInput, actor: string, now = new Date().toISOString()): Promise<{ id: number; before: Row | null; changed: boolean }> {
   const id = input.id ? Number(input.id) : 0, before = id ? await db.prepare("SELECT * FROM deals WHERE id=?").bind(id).first<Row>() : null;
   if (id && !before) throw new ServiceError("Deal not found.", 404);
-  const pipe = (await pipelines(db)).find(p => p.id === str(input.pipeline_key)), stage = pipe?.stages.find(st => st.key === str(input.stage_key));
+  const pipe = await findPipeline(db, str(input.pipeline_key)), stage = pipe?.stages.find(st => st.key === str(input.stage_key));
   if (!pipe || !stage) throw new ServiceError("Choose a pipeline and one of its stages.");
   const name = need(input.name, "Deal name"), owner = need(input.owner, "Owner"), reason = str(input.closed_reason), next = str(input.next_step);
   if (stage.kind !== "Open" && !reason) throw new ServiceError("A won/lost reason is required.");

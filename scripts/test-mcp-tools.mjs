@@ -110,12 +110,12 @@ sqlite.prepare("INSERT INTO sales_pipelines(id,name,stages,updated_at) VALUES (?
 const firstSaved = await callTool(owner, "create_deal", { name: "CSI deal", nextStep: "Call" });
 assert.deepEqual({ ...firstSaved.result, id: undefined }, { id: undefined, pipeline: "CSI pipeline", stage: "Target" }, "omitted pipeline = first saved pipeline by rowid, first open stage");
 assert.deepEqual({ ...sqlite.prepare("SELECT pipeline_key,stage_key FROM deals WHERE id=?").get(firstSaved.result.id) }, { pipeline_key: "csi", stage_key: "target" });
-const named = await callTool(owner, "create_deal", { name: "NB deal", nextStep: "Call", pipeline: "new BUSINESS", stage: "discovery" });
-assert.deepEqual({ pipeline: named.result.pipeline, stage: named.result.stage }, { pipeline: "New business", stage: "Discovery" }, "pipeline by name, case-insensitive");
+const named = await callTool(owner, "create_deal", { name: "Aard named deal", nextStep: "Call", pipeline: "aardvark PIPELINE", stage: "intro" });
+assert.deepEqual({ pipeline: named.result.pipeline, stage: named.result.stage }, { pipeline: "Aardvark pipeline", stage: "Intro" }, "pipeline by name, case-insensitive");
 const byId = await callTool(owner, "create_deal", { name: "Aard deal", nextStep: "Call", pipeline: "AARD" });
 assert.deepEqual({ pipeline: byId.result.pipeline, stage: byId.result.stage }, { pipeline: "Aardvark pipeline", stage: "Intro" }, "pipeline by id");
 const badPipe = await callTool(owner, "create_deal", { name: "X", nextStep: "Call", pipeline: "Nope" });
-assert.equal(badPipe.status, 400); assert.ok(/CSI pipeline/.test(badPipe.error) && /New business/.test(badPipe.error) && /Aardvark pipeline/.test(badPipe.error), badPipe.error);
+assert.equal(badPipe.status, 400); assert.ok(/CSI pipeline/.test(badPipe.error) && !/New business/.test(badPipe.error) && /Aardvark pipeline/.test(badPipe.error), badPipe.error);
 const badStage = await callTool(owner, "create_deal", { name: "X", nextStep: "Call", pipeline: "csi", stage: "Qualified" });
 assert.equal(badStage.status, 400); assert.equal(badStage.error, "Unknown stage. Stages: Target, Proposal, Won, Lost.");
 

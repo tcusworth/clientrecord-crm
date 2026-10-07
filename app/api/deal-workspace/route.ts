@@ -2,12 +2,12 @@ import { env } from "cloudflare:workers";
 import { audit, can, canAdmin, crmUser, sha256 } from "@/lib/crm-auth";
 import { canSeeSensitive, visibleArtifactSql } from "@/lib/ai-governance";
 import { calculateRelationshipHealth } from "@/lib/relationship-health";
-import { defaultPipeline, type Stage } from "@/lib/sales-rules";
+import { type Stage } from "@/lib/sales-rules";
 import { calculateStakeholderCoverage, dealStakeholderRoles } from "@/lib/stakeholder-coverage";
 import { generateRecommendationCandidates, type RecommendationCandidate } from "@/lib/next-best-action";
 import { buildMeetingPreparationBrief } from "@/lib/meeting-intelligence";
 import { withoutShareToken } from "@/lib/proposals";
-import { addDealNote, dealRecord as dealRecordService, logDealActivity } from "@/lib/services/deals";
+import { addDealNote, dealRecord as dealRecordService, logDealActivity, mainPipeline } from "@/lib/services/deals";
 import { ServiceError } from "@/lib/services/errors";
 
 type Row=Record<string,unknown>;
@@ -40,7 +40,7 @@ function meetingArtifact(row:Row|null){
 
 async function coverageStage(deal:Row){
   const saved=await one("SELECT stages FROM sales_pipelines WHERE id=?",String(deal.pipeline_key||"default"));
-  let stages:Stage[]=String(deal.pipeline_key||"default")==="default"?defaultPipeline.stages:[];
+  let stages:Stage[]=saved?[]:(await mainPipeline(env.DB)).stages;
   if(saved?.stages)try{const parsed=JSON.parse(String(saved.stages));if(Array.isArray(parsed))stages=parsed}catch{}
   const current=stages.find(stage=>stage.key===String(deal.stage_key)||stage.name===String(deal.stage));
   const kind=(current?.kind||(["Won","Lost"].includes(String(deal.status))?String(deal.status):"Open")) as "Open"|"Won"|"Lost",open=stages.filter(stage=>stage.kind==="Open"),index=kind==="Open"?Math.max(0,open.findIndex(stage=>stage===current)):Math.max(0,open.length-1);

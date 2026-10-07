@@ -124,8 +124,8 @@ await deals.saveDeal(db, { name: "CSI target", owner: "Owner", pipeline_key: "cs
 sqlite.exec("INSERT INTO deals(name,stage,stage_key,pipeline_key,owner,value,probability,status,created_at,updated_at) VALUES ('Legacy','Legacy','legacy','csi','Owner',300,0,'Open','now','now'),('Orphan','Old stage','old','gone','Owner',700,0,'Open','now','now')");
 const multi = await reads.pipelineSummary(db);
 assert.deepEqual(multi.byPipeline.map(p => ({ ...p.pipeline, openValue: p.openValue, weightedForecast: p.weightedForecast, stages: p.stages })), [
-  { id: "default", name: "New business", openValue: 1000, weightedForecast: 600, stages: [{ stage: "Proposal", count: 1, value: 1000 }] },
   { id: "csi", name: "CSI pipeline", openValue: 2503, weightedForecast: 1050, stages: [{ stage: "Target", count: 1, value: 500 }, { stage: "Proposal", count: 1, value: 2000 }, { stage: "Legacy", count: 1, value: 3 }] },
+  { id: "default", name: "New business", openValue: 1000, weightedForecast: 600, stages: [{ stage: "Proposal", count: 1, value: 1000 }] },
   { id: "gone", name: "gone", openValue: 7, weightedForecast: 0, stages: [{ stage: "Old stage", count: 1, value: 7 }] },
 ], "Proposal in two pipelines is not merged");
 assert.deepEqual({ open: multi.openValue, weighted: multi.weightedForecast }, { open: 3510, weighted: 1650 });
