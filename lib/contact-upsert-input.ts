@@ -13,7 +13,7 @@ export function parseUpsertInput(body:unknown):{ok:true;value:UpsertInput}|{ok:f
   const fullName=text("fullName",b.fullName,240);
   if(fullName){const [first,...rest]=fullName.split(/\s+/);if(!firstName)firstName=first||"";if(!lastName)lastName=rest.join(" ")}
   const source=text("source",b.source,40) as UpsertSource;
-  if(!(source in SOURCE_LABELS))fields.source=`Use one of: ${Object.keys(SOURCE_LABELS).join(", ")}.`;
+  if(!Object.hasOwn(SOURCE_LABELS,source))fields.source=`Use one of: ${Object.keys(SOURCE_LABELS).join(", ")}.`;
   const reportName=text("reportName",b.reportName,200);
   if(source==="report_download"&&!reportName)fields.reportName="reportName is required for report_download.";
   let consent:boolean|null=null;

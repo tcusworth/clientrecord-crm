@@ -26,6 +26,7 @@ const bad = body => parseUpsertInput(body);
 assert.deepEqual(Object.keys(bad({ source: "decoder" }).fields), ["email"]);
 assert.ok(bad({ email: "nope", source: "decoder" }).fields.email);
 assert.ok(bad({ email: "a@b.co", source: "webinar" }).fields.source);
+for (const source of ["constructor", "toString", "__proto__"]) assert.ok(bad({ email: "a@b.co", source }).fields?.source, `source ${source} rejected`);
 assert.ok(bad({ email: "a@b.co", source: "report_download" }).fields.reportName);
 assert.ok(bad({ email: "a@b.co", source: "decoder", consent: "maybe" }).fields.consent);
 assert.ok(bad({ email: "a@b.co", source: "decoder", lists: Array.from({ length: 11 }, (_, i) => `L${i}`) }).fields.lists);
