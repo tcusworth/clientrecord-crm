@@ -108,6 +108,55 @@ With `CF_ACCESS_ENFORCED=true` and `CF_ACCESS_AUD` missing or wrong, every signe
 
 Machine clients use scoped API keys (`Authorization: Bearer cr_live_…`), created in the app and stored only as SHA-256 hashes. Scopes: `records.read`, `records.write`, `leads.capture`, `inbox.capture`, `meetings.import`, `jobs.run`, `backups.export`, or `*`. Only owners can create `*` and `backups.export` keys, and `*` does not grant `backups.export`. The OpenAPI 3.1 description of the public API (`/api/v1/records`, Meetily import, scheduled jobs via `/api/operations`) is served at `GET /api/openapi`.
 
+#### Website contact upsert
+
+`POST /api/v1/contacts/upsert` creates or updates a contact from a website form. It needs a key with the `leads.capture` scope. The contact is matched by email, added to any named lists, consent is recorded, the submission is logged, and a follow-up task is created. The API-key endpoints are on the Access bypass list (see [Moving off OpenAI Sites](#moving-off-openai-sites)), so keys are the only check on them.
+
+```bash
+export CRM_API_KEY="$(cat ~/.config/clientrecord/key)"   # your cr_live_ key
+curl -X POST "https://new.clientrecordcrm.com/api/v1/contacts/upsert" \
+  -H "Authorization: Bearer $CRM_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "jane@example.com",
+    "fullName": "Jane Smith",
+    "jobTitle": "Operations Lead",
+    "company": "Example Co",
+    "note": { "title": "Website inquiry", "body": "Asked about onboarding." },
+    "source": "contact_form",
+    "consent": true,
+    "consentText": "Yes, email me about ClientRecord.",
+    "referrer": "https://example.com/pricing",
+    "utm": { "source": "newsletter", "campaign": "spring" },
+    "lists": ["Website leads"],
+    "submissionId": "form-2026-10-14-0001"
+  }'
+```
+
+Fields:
+
+- `email` and `source` are required. `source` is one of `contact_form`, `epc_inquiry`, `report_download`, `decoder` or `insights_signup`. `reportName` is required when `source` is `report_download`.
+- `firstName`, `lastName`, `fullName` (split on whitespace to fill a missing first or last name), `jobTitle`, `company`, `note` (`title` and `body`), `consentText`, `referrer` and `utm` are optional. Length limits are in the OpenAPI description.
+- `consent` is a boolean or one of the strings `true`, `yes`, `on`, `1`, `false`, `no`, `off` or `0`.
+- `lists` is up to 10 list names. Missing lists are created, and names match case-insensitively. Lists appear under **Audiences** and can be used as a campaign audience.
+- Website submissions appear under **Lead capture**.
+- `submissionId` is an idempotency key (up to 200 characters). Send a unique `submissionId` per submission. A repeated `submissionId` returns `action: "duplicate"` without changing anything.
+
+Responses:
+
+| Status | Meaning |
+|---|---|
+| `201` | Contact created. Body: `{ contactId, action: "created", submissionId, lists }` |
+| `200` | Contact updated (`action: "updated"`), or the `submissionId` was already processed (`action: "duplicate"`) |
+| `400` | Invalid JSON or payload. `fields` maps each invalid field to a message |
+| `401` | Missing or invalid API key |
+| `403` | Key lacks the `leads.capture` scope |
+| `413` | Payload exceeds 20 KB |
+| `500` | Unexpected failure. Nothing was saved. Retry |
+| `503` | Temporary storage failure. Nothing was saved. Retry |
+
+Treat `5xx` as a retry and `4xx` as a payload bug to fix. The route retries once internally when a concurrent request wins a uniqueness race on `submissionId` or on the contact email, so a single `5xx` is usually safe to retry with the same `submissionId`.
+
 ### AI tools (MCP server)
 
 `mcp/` is a second Worker, `clientrecord-mcp`, served at `https://mcp.clientrecordcrm.com/mcp`. It lets Claude, Claude Code/Desktop and ChatGPT read the CRM and make safe changes (create/update contacts, companies and deals; notes, activities and tasks) as the signed-in person, with that person's current permissions. It cannot delete, merge, bulk-edit, send email, see documents or change settings.
