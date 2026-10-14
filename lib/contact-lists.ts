@@ -23,7 +23,3 @@ export async function renameList(listId:number,name:string){
 export async function deleteList(listId:number){
   await env.DB.batch([env.DB.prepare("DELETE FROM contact_list_members WHERE list_id=?").bind(listId),env.DB.prepare("DELETE FROM contact_lists WHERE id=?").bind(listId)]);
 }
-export async function contactListsFor(contactId:number){
-  const rows=(await env.DB.prepare("SELECT l.id,l.name FROM contact_list_members m JOIN contact_lists l ON l.id=m.list_id WHERE m.contact_id=? ORDER BY l.name COLLATE NOCASE").bind(contactId).all<Row>()).results||[];
-  return rows.map(r=>({id:Number(r.id),name:String(r.name)}));
-}

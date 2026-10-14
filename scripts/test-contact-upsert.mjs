@@ -100,6 +100,10 @@ sqlite.exec("CREATE TRIGGER boom BEFORE INSERT ON form_submissions BEGIN SELECT 
 await assert.rejects(() => upsertContact(input({ email: "atomic@x.com", source: "decoder", lists: ["Atomic"] }), user));
 assert.equal(contact("atomic@x.com"), undefined); assert.equal(count("SELECT count(*) FROM contact_lists WHERE name='Atomic'"), 0);
 sqlite.exec("DROP TRIGGER boom");
+sqlite.prepare("INSERT INTO suppressions(email,reason,created_at) VALUES ('blocked@x.com','complaint',datetime('now'))").run();
+await upsertContact(input({ email: "Blocked@x.com", source: "decoder", consent: true }), user);
+const blocked = contact("blocked@x.com");
+assert.equal(blocked.subscribed, 0, "new suppressed email is not subscribed despite consent"); assert.equal(blocked.suppression_reason, "complaint"); assert.ok(blocked.suppressed_at);
 console.log("contact upsert: service ok");
 
 // HTTP route

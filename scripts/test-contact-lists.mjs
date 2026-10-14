@@ -27,7 +27,6 @@ try {
   assert.deepEqual([...await lists.listMemberIds(listId)].sort(), [a, b, c].sort());
   const members = await lists.listMembers(listId);
   assert.equal(members.length, 3); assert.equal(members.find(m => m.contactId === c).subscribed, false); assert.equal(members[0].source, "web-form");
-  assert.deepEqual((await lists.contactListsFor(a)).map(l => l.name), ["Spring Report"]);
 
   // list:{id} audience selects only subscribed members (observed through the Resend segment add calls).
   sqlite.prepare("INSERT INTO campaigns(name,subject,html,text_body,status,audience,recipient_count,created_at,updated_at) VALUES ('C','S','<p>x</p>','x','Draft',?,0,date('now'),datetime('now'))").run(`list:${listId}`);

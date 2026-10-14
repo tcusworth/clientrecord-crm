@@ -106,7 +106,7 @@ With `CF_ACCESS_ENFORCED=true` and `CF_ACCESS_AUD` missing or wrong, every signe
 
 ### API keys and OpenAPI
 
-Machine clients use scoped API keys (`Authorization: Bearer cr_live_…`), created in the app and stored only as SHA-256 hashes. Scopes: `records.read`, `records.write`, `leads.capture`, `inbox.capture`, `meetings.import`, `jobs.run`, `backups.export`, or `*`. Only owners can create `*` and `backups.export` keys, and `*` does not grant `backups.export`. The OpenAPI 3.1 description of the public API (`/api/v1/records`, Meetily import, scheduled jobs via `/api/operations`) is served at `GET /api/openapi`.
+Machine clients use scoped API keys (`Authorization: Bearer cr_live_…`), created in the app and stored only as SHA-256 hashes. Scopes: `records.read`, `records.write`, `leads.capture`, `inbox.capture`, `meetings.import`, `jobs.run`, `backups.export`, or `*`. Only owners can create `*` and `backups.export` keys, and `*` does not grant `backups.export`. The OpenAPI 3.1 description of the public API (`/api/v1/records`, `/api/v1/contacts/upsert`, Meetily import, scheduled jobs via `/api/operations`) is served at `GET /api/openapi`.
 
 #### Website contact upsert
 
@@ -114,7 +114,7 @@ Machine clients use scoped API keys (`Authorization: Bearer cr_live_…`), creat
 
 ```bash
 export CRM_API_KEY="$(cat ~/.config/clientrecord/key)"   # your cr_live_ key
-curl -X POST "https://new.clientrecordcrm.com/api/v1/contacts/upsert" \
+curl -X POST "https://clientrecordcrm.com/api/v1/contacts/upsert" \
   -H "Authorization: Bearer $CRM_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -140,7 +140,7 @@ Fields:
 - `consent` is a boolean or one of the strings `true`, `yes`, `on`, `1`, `false`, `no`, `off` or `0`.
 - `lists` is up to 10 list names. Missing lists are created, and names match case-insensitively. Lists appear under **Audiences** and can be used as a campaign audience.
 - Website submissions appear under **Lead capture**.
-- `submissionId` is an idempotency key (up to 200 characters). Send a unique `submissionId` per submission. A repeated `submissionId` returns `action: "duplicate"` without changing anything.
+- `submissionId` is an optional idempotency key (up to 200 characters), but strongly recommended: without it, retries are not deduplicated. Send a unique `submissionId` per submission. A repeated `submissionId` returns `action: "duplicate"` without changing anything.
 
 Responses:
 
@@ -152,8 +152,8 @@ Responses:
 | `401` | Missing or invalid API key |
 | `403` | Key lacks the `leads.capture` scope |
 | `413` | Payload exceeds 20 KB |
-| `500` | Unexpected failure. Nothing was saved. Retry |
-| `503` | Temporary storage failure. Nothing was saved. Retry |
+| `500` | Unexpected failure. Retry with the same `submissionId`; it is safe. |
+| `503` | Temporary storage failure. Retry with the same `submissionId`; it is safe. |
 
 Treat `5xx` as a retry and `4xx` as a payload bug to fix. The route retries once internally when a concurrent request wins a uniqueness race on `submissionId` or on the contact email, so a single `5xx` is usually safe to retry with the same `submissionId`.
 
