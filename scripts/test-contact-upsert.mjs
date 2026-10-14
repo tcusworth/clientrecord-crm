@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createTestContext } from "./test-helpers.mjs";
 
-const { sqlite, load } = createTestContext();
+const { sqlite, env, load } = createTestContext();
 const { parseUpsertInput } = load("lib/contact-upsert-input.ts");
 const auth = load("lib/crm-auth.ts");
 
@@ -136,4 +136,19 @@ assert.equal((await route.POST(new Request("https://crm.example.com/api/v1/conta
 // openapi documents it
 const spec = await (await load("app/api/openapi/route.ts").GET(new Request("https://crm.example.com/api/openapi"))).json();
 assert.ok(spec.paths["/api/v1/contacts/upsert"]?.post?.responses?.["503"]);
+// ruling 1: unique-race retry, driven deterministically by wrapping env.DB.batch
+async function withBatch(wrap, fn) { const orig = env.DB.batch, real = orig.bind(env.DB); let calls = 0; env.DB.batch = (stmts) => wrap(++calls, () => real(stmts)); try { return await fn(() => calls); } finally { env.DB.batch = orig; } }
+const addContact = email => Number(sqlite.prepare("INSERT INTO contacts(first_name,last_name,email,company,title,stage,tags,subscribed,created_at,updated_at) VALUES ('','',?,'','','Lead','[]',0,datetime('now'),datetime('now'))").run(email).lastInsertRowid);
+await withBatch((n, real) => { if (n === 1) { addContact("racea@x.com"); throw new Error("UNIQUE constraint failed: contacts.email"); } return real(); }, async calls => {
+  res = await call({ email: "racea@x.com", source: "decoder" });
+  assert.equal(res.status, 200); assert.equal(res.body.action, "updated"); assert.equal(calls(), 2);
+});
+await withBatch((n, real) => { if (n === 1) { const id = addContact("raceb@x.com"); sqlite.prepare("INSERT INTO form_submissions(id,submission_id,contact_id,action,source,created_at) VALUES ('race-b-row','race-b',?,'created','decoder',datetime('now'))").run(id); throw new Error("UNIQUE constraint failed: form_submissions.submission_id"); } return real(); }, async calls => {
+  res = await call({ email: "raceb@x.com", source: "decoder", submissionId: "race-b" });
+  assert.equal(res.status, 200); assert.equal(res.body.action, "duplicate"); assert.equal(calls(), 1); // retry short-circuits at the duplicate lookup
+});
+await withBatch(() => { throw new Error("UNIQUE constraint failed: contacts.email"); }, async calls => {
+  res = await call({ email: "racec@x.com", source: "decoder" });
+  assert.equal(res.status, 500); assert.equal(calls(), 2);
+});
 console.log("contact upsert: http ok");
