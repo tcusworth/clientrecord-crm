@@ -3,6 +3,7 @@ import { createTestContext } from "./test-helpers.mjs";
 
 const { sqlite, load } = createTestContext();
 const { parseUpsertInput } = load("lib/contact-upsert-input.ts");
+const auth = load("lib/crm-auth.ts");
 
 // Schema
 sqlite.prepare("INSERT INTO contact_lists(name,created_at) VALUES ('State of OPA 2026',datetime('now'))").run();
@@ -100,3 +101,39 @@ await assert.rejects(() => upsertContact(input({ email: "atomic@x.com", source: 
 assert.equal(contact("atomic@x.com"), undefined); assert.equal(count("SELECT count(*) FROM contact_lists WHERE name='Atomic'"), 0);
 sqlite.exec("DROP TRIGGER boom");
 console.log("contact upsert: service ok");
+
+// HTTP route
+const route = load("app/api/v1/contacts/upsert/route.ts");
+async function key(scopes) { const raw = `cr_live_${crypto.randomUUID()}`; sqlite.prepare("INSERT INTO api_keys(id,name,key_hash,key_prefix,scopes,created_by,created_at) VALUES (?,?,?,?,?,?,datetime('now'))").run(crypto.randomUUID(), "t", await auth.sha256(raw), raw.slice(0, 12), scopes, "trevor@example.com"); return raw; }
+const leads = await key("leads.capture"), readOnly = await key("records.read");
+const call = async (body, token = leads, rawBody) => { const res = await route.POST(new Request("https://crm.example.com/api/v1/contacts/upsert", { method: "POST", headers: { authorization: token ? `Bearer ${token}` : "", "content-type": "application/json" }, body: rawBody ?? JSON.stringify(body) })); return { status: res.status, body: await res.json() }; };
+assert.equal((await call({ email: "r@x.com", source: "decoder" }, "")).status, 401);
+assert.equal((await call({ email: "r@x.com", source: "decoder" }, "cr_live_nope")).status, 401);
+assert.equal((await call({ email: "r@x.com", source: "decoder" }, readOnly)).status, 403);
+assert.equal((await call(null, leads, "{bad json")).status, 400);
+for (const b of [[], null, "text", 42]) assert.equal((await call(b)).status, 400, JSON.stringify(b));
+let res = await call({ email: "r@x.com", source: "report_download" });
+assert.equal(res.status, 400); assert.ok(res.body.fields.reportName);
+assert.equal((await call(null, leads, JSON.stringify({ email: "r@x.com", source: "decoder", note: { body: "x".repeat(21000) } }))).status, 413);
+res = await call({ email: "r@x.com", source: "decoder", submissionId: "http-1" });
+assert.equal(res.status, 201); assert.equal(res.body.action, "created");
+res = await call({ email: "r@x.com", source: "decoder", submissionId: "http-1" });
+assert.equal(res.status, 200); assert.equal(res.body.action, "duplicate");
+res = await call({ email: "r@x.com", source: "decoder" });
+assert.equal(res.status, 200); assert.equal(res.body.action, "updated");
+// concurrent same submissionId
+const [a, b2] = await Promise.all([call({ email: "race@x.com", source: "decoder", submissionId: "race-1" }), call({ email: "race@x.com", source: "decoder", submissionId: "race-1" })]);
+assert.deepEqual([a.status, b2.status].sort(), [200, 201]);
+assert.equal(count("SELECT count(*) FROM form_submissions WHERE submission_id='race-1'"), 1);
+// 5xx mapping
+sqlite.exec("CREATE TRIGGER boom2 BEFORE INSERT ON form_submissions BEGIN SELECT RAISE(ABORT,'D1_ERROR: storage overloaded'); END;");
+res = await call({ email: "x5@x.com", source: "decoder" }); assert.equal(res.status, 503); assert.deepEqual(res.body, { error: "Temporary failure; retry." });
+sqlite.exec("DROP TRIGGER boom2; CREATE TRIGGER boom3 BEFORE INSERT ON form_submissions BEGIN SELECT RAISE(ABORT,'something else'); END;");
+res = await call({ email: "x5@x.com", source: "decoder" }); assert.equal(res.status, 500);
+sqlite.exec("DROP TRIGGER boom3");
+// session identity must not authenticate
+assert.equal((await route.POST(new Request("https://crm.example.com/api/v1/contacts/upsert", { method: "POST", headers: { "oai-authenticated-user-id": "u", "oai-authenticated-user-email": "trevor@example.com" }, body: JSON.stringify({ email: "s@x.com", source: "decoder" }) }))).status, 401);
+// openapi documents it
+const spec = await (await load("app/api/openapi/route.ts").GET(new Request("https://crm.example.com/api/openapi"))).json();
+assert.ok(spec.paths["/api/v1/contacts/upsert"]?.post?.responses?.["503"]);
+console.log("contact upsert: http ok");

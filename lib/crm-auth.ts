@@ -89,18 +89,35 @@ export async function sha256(value: string) {
   return Array.from(new Uint8Array(digest)).map(byte => byte.toString(16).padStart(2,"0")).join("");
 }
 
-// allowWildcard:false requires the scope to be listed explicitly ("*" keys do not satisfy it).
-export async function apiKeyUser(request: Request, requiredScope: string, { allowWildcard = true } = {}): Promise<CRMUser | null> {
+async function apiKeyRow(request: Request) {
   const raw = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim();
   if (!raw?.startsWith("cr_live_")) return null;
   const hash = await sha256(raw);
   const row = await env.DB.prepare("SELECT id,scopes,created_by AS createdBy FROM api_keys WHERE key_hash=? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>datetime('now'))").bind(hash).first<{id:string;scopes:string;createdBy:string}>();
   if (!row) return null;
-  const scopes = String(row.scopes).split(",").map(v=>v.trim());
-  if (!(allowWildcard && scopes.includes("*")) && !scopes.includes(requiredScope)) return null;
+  return { row, scopes:String(row.scopes).split(",").map(v=>v.trim()) };
+}
+
+async function apiKeyIdentity(row: {id:string;createdBy:string}, scopes: string[]): Promise<CRMUser> {
   await env.DB.prepare("UPDATE api_keys SET last_used_at=datetime('now') WHERE id=?").bind(row.id).run();
   const permissions = apiKeyPermissions(scopes);
   return { id:`api:${row.id}`, email:row.createdBy, role:permissions.includes("records.edit") ? "editor" : "viewer", permissions };
+}
+
+// allowWildcard:false requires the scope to be listed explicitly ("*" keys do not satisfy it).
+export async function apiKeyUser(request: Request, requiredScope: string, { allowWildcard = true } = {}): Promise<CRMUser | null> {
+  const found = await apiKeyRow(request);
+  if (!found) return null;
+  if (!(allowWildcard && found.scopes.includes("*")) && !found.scopes.includes(requiredScope)) return null;
+  return apiKeyIdentity(found.row, found.scopes);
+}
+
+// Like apiKeyUser, but distinguishes an unknown key (401) from a valid key lacking the scope (403).
+export async function apiKeyAccess(request: Request, scope: string): Promise<{user:CRMUser}|{status:401|403}> {
+  const found = await apiKeyRow(request);
+  if (!found) return { status:401 };
+  if (!found.scopes.includes("*") && !found.scopes.includes(scope)) return { status:403 };
+  return { user:await apiKeyIdentity(found.row, found.scopes) };
 }
 
 function safeAuditChanges(changes: unknown) {
