@@ -38,6 +38,9 @@ INSERT INTO field_captures(id,type,contact_id,captured_by,captured_at) VALUES ('
 INSERT INTO partner_contacts(id,partner_company_id,contact_id,first_name,last_name,email,created_at,updated_at) VALUES ('pc-1','p1',3,'Dana','Gone','dana-partner@acme.test','now','now');
 INSERT INTO service_cases(id,case_number,subject,contact_id,created_at,updated_at) VALUES ('case-1','CR-1','Help',3,'now','now');
 INSERT INTO communication_review_items(id,source,contact_id,created_at) VALUES ('cri-1','google',3,'now');
+INSERT INTO contact_lists(id,name,created_at) VALUES (1,'State of OPA 2026','now');
+INSERT INTO contact_list_members(list_id,contact_id,added_at) VALUES (1,3,'now'),(1,1,'now');
+INSERT INTO form_submissions(id,contact_id,action,source,created_at) VALUES ('fs-1',3,'created','decoder','now');
 INSERT INTO custom_field_values(definition_id,entity_type,entity_id,value,updated_at) VALUES (1,'contact',3,'Gold','now');
 INSERT INTO ai_record_fields(id,entity_type,entity_id,field_key,value_json,updated_by,updated_at) VALUES ('arf-1','contact','3','persona','"VP"','${owner}','now');
 INSERT INTO custom_relationships(id,relationship_type_id,from_entity_type,from_entity_id,to_entity_type,to_entity_id,created_by,created_at) VALUES ('rel-1','rt','contact','3','company','1','${owner}','now');
@@ -59,7 +62,7 @@ assert.deepEqual(refsTo(3).filter(([, n]) => n > 0), [], "no references to the d
 assert.deepEqual(sqlite.prepare("PRAGMA foreign_key_check").all(), [], "FK integrity");
 
 // History and independent records survive, detached from the deleted contact.
-for (const [tbl, where] of [["companies", "id=1"], ["deals", "id=1"], ["sync_records", "external_id='x1'"], ["client_documents", "id='doc-1'"], ["deal_activities", "deal_id=1"], ["deal_meeting_attendees", "meeting_id='meet-1'"], ["inbox_messages", "id='in-1'"], ["lead_intakes", "id='lead-1'"], ["field_captures", "id='fc-1'"], ["partner_contacts", "id='pc-1'"], ["service_cases", "id='case-1'"], ["communication_review_items", "id='cri-1'"]])
+for (const [tbl, where] of [["companies", "id=1"], ["deals", "id=1"], ["sync_records", "external_id='x1'"], ["client_documents", "id='doc-1'"], ["deal_activities", "deal_id=1"], ["deal_meeting_attendees", "meeting_id='meet-1'"], ["inbox_messages", "id='in-1'"], ["lead_intakes", "id='lead-1'"], ["field_captures", "id='fc-1'"], ["partner_contacts", "id='pc-1'"], ["service_cases", "id='case-1'"], ["communication_review_items", "id='cri-1'"], ["form_submissions", "id='fs-1'"]])
   assert.ok(sqlite.prepare(`SELECT 1 FROM ${tbl} WHERE ${where}`).get(), `${tbl} row kept`);
 assert.deepEqual({ ...sqlite.prepare("SELECT contact_id AS c,duplicate_contact_id AS d,task_id AS t FROM lead_intakes WHERE id='lead-1'").get() }, { c: null, d: null, t: null }, "lead intake detached from contact and its deleted task");
 assert.equal(sqlite.prepare("SELECT task_id AS t FROM inbox_messages WHERE id='in-1'").get().t, null, "inbox message detached from the deleted task");

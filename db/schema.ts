@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { index, uniqueIndex, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { index, uniqueIndex, integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 export const contacts = sqliteTable("contacts", {
   id: integer("id").primaryKey({ autoIncrement: true }), firstName: text("first_name").notNull(), lastName: text("last_name").notNull(),
@@ -8,6 +8,7 @@ export const contacts = sqliteTable("contacts", {
   stage: text("stage").notNull().default("Lead"), tags: text("tags", { mode: "json" }).$type<string[]>().notNull().default([]),
   lastContact: text("last_contact"), nextFollowUp: text("next_follow_up"), subscribed: integer("subscribed", { mode: "boolean" }).notNull().default(true),
   suppressionReason: text("suppression_reason"), suppressedAt: text("suppressed_at"),
+  firstSource: text("first_source").notNull().default(""), latestSource: text("latest_source").notNull().default(""),
   resendId: text("resend_id"), resendSyncedAt: text("resend_synced_at"),
   createdAt: text("created_at").notNull(), updatedAt: text("updated_at").notNull().default(""),
 }, t => [
@@ -332,3 +333,13 @@ export const actionUndoLog = sqliteTable("action_undo_log", {
 export const rateLimits = sqliteTable("rate_limits", {
   key:text("key").primaryKey(), windowStart:integer("window_start").notNull(), count:integer("count").notNull().default(0),
 }, t=>[index("rate_limits_window").on(t.windowStart)]);
+export const formSubmissions = sqliteTable("form_submissions", {
+  id: text("id").primaryKey(), submissionId: text("submission_id"), contactId: integer("contact_id").references(() => contacts.id), action: text("action").notNull(), source: text("source").notNull(),
+  reportName: text("report_name").notNull().default(""), consent: integer("consent", { mode: "boolean" }), consentText: text("consent_text").notNull().default(""), referrer: text("referrer").notNull().default(""),
+  utmSource: text("utm_source").notNull().default(""), utmMedium: text("utm_medium").notNull().default(""), utmCampaign: text("utm_campaign").notNull().default(""), utmTerm: text("utm_term").notNull().default(""), utmContent: text("utm_content").notNull().default(""),
+  noteTitle: text("note_title").notNull().default(""), listsJson: text("lists_json").notNull().default("[]"), taskId: integer("task_id"), apiKeyId: text("api_key_id").notNull().default(""), createdAt: text("created_at").notNull(),
+}, t => [uniqueIndex("form_submissions_submission_id_unique").on(t.submissionId).where(sql`${t.submissionId} IS NOT NULL`), index("form_submissions_source_idx").on(t.source), index("form_submissions_contact_idx").on(t.contactId), index("form_submissions_campaign_idx").on(t.utmCampaign)]);
+export const contactLists = sqliteTable("contact_lists", { id: integer("id").primaryKey({ autoIncrement: true }), name: text("name").notNull(), createdAt: text("created_at").notNull() }, t => [uniqueIndex("contact_lists_name_unique").on(sql`lower(${t.name})`)]);
+export const contactListMembers = sqliteTable("contact_list_members", {
+  listId: integer("list_id").notNull().references(() => contactLists.id, { onDelete: "cascade" }), contactId: integer("contact_id").notNull().references(() => contacts.id), addedAt: text("added_at").notNull(), source: text("source").notNull().default(""),
+}, t => [primaryKey({ columns: [t.listId, t.contactId] })]);
