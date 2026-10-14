@@ -4,7 +4,7 @@
 export type Row=Record<string,unknown>;
 
 /** Contact as returned by GET /api/crm (camelCase). */
-export type Contact={id:number;firstName:string;lastName:string;email:string;company:string;title:string;phone?:string;location?:string;notes?:string;leadSource?:string;stage:string;tags:string[];lastContact:string|null;nextFollowUp:string|null;subscribed:boolean;suppressionReason?:string|null;suppressedAt?:string|null;createdAt?:string};
+export type Contact={id:number;firstName:string;lastName:string;email:string;company:string;title:string;phone?:string;location?:string;notes?:string;leadSource?:string;stage:string;tags:string[];lastContact:string|null;nextFollowUp:string|null;subscribed:boolean;suppressionReason?:string|null;suppressedAt?:string|null;createdAt?:string;lists?:string[];firstSource?:string;latestSource?:string};
 /** Minimal contact reference used by pickers. */
 export type ContactRef=Pick<Contact,"id"|"firstName"|"lastName"|"email"|"company">;
 /** Contact as returned by /api/sales and related workspaces (single display name). */

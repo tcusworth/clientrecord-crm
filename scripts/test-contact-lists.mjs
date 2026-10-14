@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createTestContext } from "./test-helpers.mjs";
 
 const { sqlite, load } = createTestContext({ RESEND_API_KEY: "re_test" });
-const lists = load("lib/contact-lists.ts"), crm = load("app/api/crm/route.ts");
+const lists = load("lib/contact-lists.ts"), crm = load("app/api/crm/route.ts"), revops = load("app/api/revenue-ops/route.ts");
 const realFetch = globalThis.fetch; let resendCalls = [];
 globalThis.fetch = async (url, init = {}) => { resendCalls.push({ url: String(url), init }); return new Response(JSON.stringify({ id: "rs_1" }), { status: 200, headers: { "content-type": "application/json" } }); };
 const headers = email => ({ "oai-authenticated-user-id": `user-${email}`, "oai-authenticated-user-email": email, "content-type": "application/json" });
@@ -46,6 +46,17 @@ try {
   const bob = rows.find(r => r.id === b);
   assert.deepEqual(bob.lists, ["Spring Report"]); assert.equal(bob.firstSource, "web-form"); assert.equal(bob.latestSource, "ebook");
   assert.deepEqual(rows.find(r => r.id === outsider).lists, []);
+
+  // List members over HTTP (viewers may read).
+  const memberRes = await crm.GET(new Request(`https://crm.example.com/api/crm?resource=listMembers&id=${listId}`, { headers: headers("viewer@example.com") })), memberBody = await memberRes.json();
+  assert.equal(memberRes.status, 200); assert.equal(memberBody.members.length, 3); assert.equal(memberBody.members[0].email.includes("@"), true);
+  assert.equal((await crm.GET(new Request("https://crm.example.com/api/crm?resource=listMembers&id=abc", { headers: headers("viewer@example.com") }))).status, 400);
+
+  // Revenue-ops GET exposes website submissions with source and utm_campaign.
+  sqlite.prepare("INSERT INTO form_submissions(id,contact_id,action,source,report_name,consent,utm_source,utm_campaign,created_at) VALUES ('s1',?,'created','report_download','Spring Report',1,'newsletter','spring-launch','2026-10-02 10:00:00')").run(a);
+  const ro = await revops.GET(new Request("https://crm.example.com/api/revenue-ops", { headers: headers("editor@example.com") })), roBody = await ro.json();
+  assert.equal(ro.status, 200); assert.equal(roBody.submissions.length, 1);
+  assert.equal(roBody.submissions[0].source, "report_download"); assert.equal(roBody.submissions[0].utm_campaign, "spring-launch"); assert.equal(roBody.submissions[0].contact_name, "Ann Test");
 
   // Permissions.
   assert.equal((await post("viewer@example.com", { action: "removeListMember", listId, contactId: a })).status, 403);

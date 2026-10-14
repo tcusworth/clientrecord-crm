@@ -4,7 +4,7 @@ import { audit, can, canAdmin, crmUser, displayName } from "@/lib/crm-auth";
 import { maybeRunDailyMaintenance } from "@/lib/operations";
 import { completeContactTask, createContact, createContactTask, logContactActivity, updateContact } from "@/lib/services/contacts";
 import { ServiceError } from "@/lib/services/errors";
-import { deleteList, listContactLists, listMemberIds, removeListMember, renameList } from "@/lib/contact-lists";
+import { deleteList, listContactLists, listMemberIds, listMembers, removeListMember, renameList } from "@/lib/contact-lists";
 import { companyDetail, companyQuery, contactDetail, contactFilter, contactQuery, contactSummary, contactWhere, listCompanies, listContacts, reconcileCompanyNames, recordMentions, searchRecords, segmentCounts, type SegmentRule } from "@/lib/crm-records";
 
 function clean(value: unknown, fallback = "") { return typeof value === "string" ? value.trim() : fallback; }
@@ -76,6 +76,7 @@ async function readResource(resource:string,url:URL){
   if(resource==="contact"){if(!Number.isInteger(id)||id<1)return Response.json({error:"Choose a contact."},{status:400});const detail=await contactDetail(env.DB,id);return detail?Response.json(detail):Response.json({error:"Contact not found."},{status:404});}
   if(resource==="companies")return Response.json(await listCompanies(env.DB,companyQuery(q)));
   if(resource==="company"){const detail=await companyDetail(env.DB,q);return detail?Response.json(detail):Response.json({error:"Company not found."},{status:404});}
+  if(resource==="listMembers"){if(!Number.isInteger(id)||id<1)return Response.json({error:"Choose a list."},{status:400});return Response.json({members:await listMembers(id)});}
   if(resource==="search")return Response.json(await searchRecords(env.DB,q));
   if(resource==="mentions")return Response.json(await recordMentions(env.DB,q.get("text")));
   if(resource==="summary")return Response.json({summary:await contactSummary(env.DB)});
