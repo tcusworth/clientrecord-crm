@@ -35,3 +35,58 @@ assert.ok(bad({ email: "a@b.co", source: "decoder", jobTitle: "x".repeat(201) })
 assert.ok(bad({ email: "a@b.co", source: "decoder", note: { body: "x".repeat(10001) } }).fields["note.body"]);
 for (const body of [null, [], "text", 42]) assert.equal(parseUpsertInput(body).ok, false);
 console.log("contact upsert: schema + validator ok");
+
+// Service
+const { upsertContact } = load("lib/contact-upsert.ts");
+globalThis.fetch = async () => new Response("ok");
+const user = { id: "api:key1", email: "trevor@example.com", role: "editor", permissions: ["records.view", "records.edit"] };
+const input = body => { const r = parseUpsertInput(body); assert.equal(r.ok, true, JSON.stringify(r.fields)); return r.value; };
+const contact = email => sqlite.prepare("SELECT * FROM contacts WHERE lower(email)=lower(?)").get(email);
+const count = (sql, ...a) => Object.values(sqlite.prepare(sql).get(...a))[0];
+
+// create
+let r = await upsertContact(input({ email: "Jane@Acme.com", firstName: "Jane", lastName: "Doe", jobTitle: "VP", company: "Acme", source: "report_download", reportName: "State of OPA 2026", consent: true, lists: ["State of OPA 2026"], note: { title: "Downloaded", body: "Report" }, utm: { source: "linkedin", campaign: "opa26" }, referrer: "https://google.com", submissionId: "sub-1" }), user);
+assert.equal(r.action, "created"); assert.ok(r.contactId > 0);
+let c = contact("jane@acme.com");
+assert.equal(c.title, "VP"); assert.equal(c.subscribed, 1); assert.equal(c.first_source, "report_download"); assert.equal(c.latest_source, "report_download");
+assert.equal(count("SELECT count(*) FROM activities WHERE contact_id=? AND type='Note'", r.contactId), 1);
+assert.equal(count("SELECT count(*) FROM tasks WHERE contact_id=?", r.contactId), 0, "downloads create no task");
+assert.equal(r.lists[0].name, "State of OPA 2026");
+let s = sqlite.prepare("SELECT * FROM form_submissions WHERE submission_id='sub-1'").get();
+assert.equal(s.utm_campaign, "opa26"); assert.equal(s.report_name, "State of OPA 2026"); assert.equal(s.consent, 1); assert.equal(s.api_key_id, "key1");
+
+// duplicate submissionId: no new writes
+r = await upsertContact(input({ email: "jane@acme.com", source: "report_download", reportName: "State of OPA 2026", note: { title: "again" }, submissionId: "sub-1" }), user);
+assert.equal(r.action, "duplicate");
+assert.equal(count("SELECT count(*) FROM activities WHERE contact_id=?", r.contactId), 1);
+assert.equal(count("SELECT count(*) FROM form_submissions WHERE contact_id=?", r.contactId), 1);
+
+// update
+r = await upsertContact(input({ email: "  JANE@acme.COM ", firstName: "", jobTitle: "", company: "Acme Corp", source: "contact_form", consent: false, lists: [" state of opa 2026 ", "Contact requests"] }), user);
+assert.equal(r.action, "updated");
+c = contact("jane@acme.com");
+assert.equal(c.first_name, "Jane"); assert.equal(c.title, "VP"); assert.equal(c.company, "Acme Corp");
+assert.equal(c.first_source, "report_download"); assert.equal(c.latest_source, "contact_form");
+assert.equal(c.subscribed, 1, "consent false never unsubscribes");
+assert.equal(count("SELECT count(*) FROM tasks WHERE contact_id=? AND title LIKE 'Respond to Jane · Contact form'", r.contactId), 1);
+assert.equal(count("SELECT count(*) FROM contact_lists"), 2, "State of OPA 2026 (seeded in the Task 1 schema test, reused, never duplicated) + Contact requests");
+assert.equal(count("SELECT count(*) FROM contact_list_members WHERE contact_id=?", r.contactId), 2);
+assert.equal(sqlite.prepare("SELECT task_id FROM form_submissions WHERE contact_id=? AND source='contact_form'").get(r.contactId).task_id > 0, true);
+
+// consent rules on existing contacts
+sqlite.prepare("INSERT INTO contacts(first_name,last_name,email,subscribed,suppression_reason,created_at) VALUES ('Sup','Pressed','sup@x.com',0,'bounced',datetime('now'))").run();
+await upsertContact(input({ email: "sup@x.com", source: "decoder", consent: true }), user);
+assert.equal(contact("sup@x.com").subscribed, 0, "suppressed stays unsubscribed");
+sqlite.prepare("INSERT INTO contacts(first_name,last_name,email,subscribed,created_at) VALUES ('Never','Sub','never@x.com',0,datetime('now'))").run();
+await upsertContact(input({ email: "never@x.com", source: "insights_signup", consent: "yes" }), user);
+assert.equal(contact("never@x.com").subscribed, 1, "consent true subscribes a never-subscribed contact");
+r = await upsertContact(input({ email: "new@x.com", source: "epc_inquiry" }), user);
+assert.equal(contact("new@x.com").subscribed, 0, "new contact without consent is unsubscribed");
+assert.equal(count("SELECT count(*) FROM tasks WHERE contact_id=?", r.contactId), 1, "epc_inquiry creates a task");
+
+// atomicity
+sqlite.exec("CREATE TRIGGER boom BEFORE INSERT ON form_submissions BEGIN SELECT RAISE(ABORT,'boom'); END;");
+await assert.rejects(() => upsertContact(input({ email: "atomic@x.com", source: "decoder", lists: ["Atomic"] }), user));
+assert.equal(contact("atomic@x.com"), undefined); assert.equal(count("SELECT count(*) FROM contact_lists WHERE name='Atomic'"), 0);
+sqlite.exec("DROP TRIGGER boom");
+console.log("contact upsert: service ok");
