@@ -14,7 +14,7 @@ const CONTACT_SORTS:Record<string,string>={
   followup:"c.next_follow_up IS NULL,c.next_follow_up,c.id",
   newest:"c.id DESC",
 };
-const CONTACT_LIST_COLUMNS="c.id,c.first_name AS firstName,c.last_name AS lastName,c.email,c.company,c.title,c.phone,c.location,c.stage,c.tags,c.last_contact AS lastContact,c.next_follow_up AS nextFollowUp,c.subscribed,c.suppression_reason AS suppressionReason";
+const CONTACT_LIST_COLUMNS="c.id,c.first_name AS firstName,c.last_name AS lastName,c.email,c.company,c.title,c.phone,c.location,c.stage,c.tags,c.last_contact AS lastContact,c.next_follow_up AS nextFollowUp,c.subscribed,c.suppression_reason AS suppressionReason,c.first_source AS firstSource,c.latest_source AS latestSource";
 const CONTACT_DETAIL_COLUMNS=`${CONTACT_LIST_COLUMNS},c.notes,c.lead_source AS leadSource,c.suppressed_at AS suppressedAt,c.created_at AS createdAt,c.updated_at AS updatedAt`;
 const text=(value:unknown,max=200)=>(typeof value==="string"?value:value==null?"":String(value)).trim().slice(0,max);
 const int=(value:unknown,fallback:number,min:number,max:number)=>{const n=Math.trunc(Number(value));return Number.isFinite(n)&&String(value??"").trim()!==""?Math.min(max,Math.max(min,n)):fallback};
@@ -40,11 +40,13 @@ export function contactWhere(filter:ContactFilter){
   return {sql:parts.length?`WHERE ${parts.join(" AND ")}`:"",binds};
 }
 function tags(value:unknown){try{const parsed=JSON.parse(String(value||"[]"));return Array.isArray(parsed)?parsed.map(String):[]}catch{return []}}
-export const contactRow=(row:Row)=>({...row,tags:tags(row.tags),subscribed:Boolean(row.subscribed)});
+export const contactRow=(row:Row,lists:string[]=[])=>({...row,tags:tags(row.tags),subscribed:Boolean(row.subscribed),lists});
 export async function listContacts(db:D1Database,query:ContactQuery){
   const where=contactWhere(query);
-  const [rows,total]=await db.batch([db.prepare(`SELECT ${CONTACT_LIST_COLUMNS} FROM contacts c ${where.sql} ORDER BY ${CONTACT_SORTS[query.sort]} LIMIT ? OFFSET ?`).bind(...where.binds,query.limit,query.offset),db.prepare(`SELECT count(*) AS total FROM contacts c ${where.sql}`).bind(...where.binds)]);
-  return {rows:(rows.results as Row[]).map(contactRow),total:Number((total.results as Row[])[0]?.total||0),offset:query.offset,limit:query.limit,sort:query.sort};
+  const page=`FROM contacts c ${where.sql} ORDER BY ${CONTACT_SORTS[query.sort]} LIMIT ? OFFSET ?`;
+  const [rows,total,memberships]=await db.batch([db.prepare(`SELECT ${CONTACT_LIST_COLUMNS} ${page}`).bind(...where.binds,query.limit,query.offset),db.prepare(`SELECT count(*) AS total FROM contacts c ${where.sql}`).bind(...where.binds),db.prepare(`SELECT m.contact_id AS contactId,l.name FROM contact_list_members m JOIN contact_lists l ON l.id=m.list_id WHERE m.contact_id IN (SELECT c.id ${page}) ORDER BY l.name COLLATE NOCASE`).bind(...where.binds,query.limit,query.offset)]);
+  const byContact=new Map<number,string[]>();for(const m of memberships.results as Row[])byContact.set(Number(m.contactId),[...(byContact.get(Number(m.contactId))||[]),String(m.name)]);
+  return {rows:(rows.results as Row[]).map(r=>contactRow(r,byContact.get(Number(r.id)))),total:Number((total.results as Row[])[0]?.total||0),offset:query.offset,limit:query.limit,sort:query.sort};
 }
 /** Contact ids matching a list filter (for "apply to all matching" bulk actions), capped. */
 /** Dashboard / campaign counts computed in SQL (one scan) instead of filtering every contact in the browser. */
@@ -68,13 +70,14 @@ export async function segmentCounts(db:D1Database,segments:SegmentRule[]){if(!se
 export async function contactDetail(db:D1Database,id:number){
   const contact=await db.prepare(`SELECT ${CONTACT_DETAIL_COLUMNS} FROM contacts c WHERE c.id=?`).bind(id).first<Row>();
   if(!contact)return null;
-  const [activities,events,values,duplicates]=await db.batch([
+  const [activities,events,values,duplicates,memberships]=await db.batch([
     db.prepare("SELECT a.id,a.contact_id AS contactId,a.type,a.note,a.happened_at AS happenedAt FROM activities a WHERE a.contact_id=? ORDER BY a.happened_at DESC LIMIT 100").bind(id),
     db.prepare("SELECT e.id,e.campaign_id AS campaignId,e.type,e.recipient,e.occurred_at AS occurredAt,m.name AS campaignName,m.subject FROM campaign_events e JOIN campaigns m ON m.id=e.campaign_id WHERE lower(e.recipient)=lower(?) ORDER BY e.occurred_at DESC LIMIT 100").bind(String(contact.email||"")),
     db.prepare("SELECT definition_id AS definitionId,entity_type AS entityType,entity_id AS entityId,value FROM custom_field_values WHERE entity_type='contact' AND entity_id=?").bind(id),
     db.prepare("SELECT c.id,c.first_name AS firstName,c.last_name AS lastName,c.email,c.company FROM contacts c WHERE c.id<>? AND c.last_name=? COLLATE NOCASE AND c.first_name=? COLLATE NOCASE AND (c.company=? OR c.company='' OR ?='') ORDER BY c.id LIMIT 20").bind(id,String(contact.lastName||""),String(contact.firstName||""),String(contact.company||""),String(contact.company||"")),
+    db.prepare("SELECT l.name FROM contact_list_members m JOIN contact_lists l ON l.id=m.list_id WHERE m.contact_id=? ORDER BY l.name COLLATE NOCASE").bind(id),
   ]);
-  return {contact:contactRow(contact),activities:activities.results,campaignEvents:events.results,customFieldValues:values.results,duplicates:duplicates.results};
+  return {contact:contactRow(contact,(memberships.results as Row[]).map(m=>String(m.name))),activities:activities.results,campaignEvents:events.results,customFieldValues:values.results,duplicates:duplicates.results};
 }
 /** Small typeahead result sets for pickers and the command bar. `ids` resolves labels for already-selected values. */
 export async function searchRecords(db:D1Database,source:URLSearchParams|Row){

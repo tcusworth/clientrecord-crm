@@ -4,6 +4,7 @@ import { audit, can, canAdmin, crmUser, displayName } from "@/lib/crm-auth";
 import { maybeRunDailyMaintenance } from "@/lib/operations";
 import { completeContactTask, createContact, createContactTask, logContactActivity, updateContact } from "@/lib/services/contacts";
 import { ServiceError } from "@/lib/services/errors";
+import { deleteList, listContactLists, listMemberIds, removeListMember, renameList } from "@/lib/contact-lists";
 import { companyDetail, companyQuery, contactDetail, contactFilter, contactQuery, contactSummary, contactWhere, listCompanies, listContacts, reconcileCompanyNames, recordMentions, searchRecords, segmentCounts, type SegmentRule } from "@/lib/crm-records";
 
 function clean(value: unknown, fallback = "") { return typeof value === "string" ? value.trim() : fallback; }
@@ -33,8 +34,9 @@ async function customFieldChanges(body: Record<string, unknown>, entityType: "co
   }
   return statements;
 }
-function audienceMatch(contact: Record<string, unknown>, audience: string, segment?: SegmentRule|null) {
+function audienceMatch(contact: Record<string, unknown>, audience: string, segment?: SegmentRule|null, listMembers?: Set<number>|null) {
   if (!Boolean(contact.subscribed)) return false;
+  if (listMembers) return listMembers.has(Number(contact.id));
   if(segment){const tags=contact.tags as string[];if(segment.stage!=="Any"&&contact.stage!==segment.stage)return false;if(segment.tag&&!tags.some(tag=>tag.toLowerCase()===segment.tag.toLowerCase()))return false;if(segment.company&&!String(contact.company).toLowerCase().includes(segment.company.toLowerCase()))return false;if(segment.location&&!String(contact.location).toLowerCase().includes(segment.location.toLowerCase()))return false;if(segment.inactivityDays>0){const cutoff=Date.now()-segment.inactivityDays*86400000;if(contact.lastContact&&new Date(String(contact.lastContact)).getTime()>cutoff)return false;}return true;}
   if (audience === "Customers only") return contact.stage === "Customer";
   if (audience === "Prospects and opportunities") return contact.stage === "Prospect" || contact.stage === "Opportunity";
@@ -63,9 +65,9 @@ async function readAll(account:{id:string;email:string;role:string}) {
     env.DB.prepare("SELECT business_name AS businessName,from_name AS fromName,physical_address AS physicalAddress,sending_domain AS sendingDomain,logo_url AS logoUrl FROM brand_settings WHERE id=1"),
   ]);
   const segmentRules=segments.results as SegmentRule[];
-  const [counts,summary,identity,name]=await Promise.all([segmentCounts(env.DB,segmentRules),contactSummary(env.DB),sendingIdentity(),displayName(account)]);
+  const [counts,summary,identity,name,lists]=await Promise.all([segmentCounts(env.DB,segmentRules),contactSummary(env.DB),sendingIdentity(),displayName(account),listContactLists()]);
   const brand=(brandRows.results as Record<string,string>[])[0];
-  return { summary, activities: activities.results, tasks: (tasks.results as Record<string,unknown>[]).map(t => ({ ...t, completed: Boolean(t.completed) })), campaigns: campaigns.results, segments:segmentRules.map((segment,index)=>({...segment,recipientCount:counts[index]})), suppressions:suppressions.results, campaignEvents:campaignEvents.results, customFields:(customFields.results as Record<string,unknown>[]).map(field=>({...field,options:JSON.parse(String(field.options||"[]"))})),account:{...account,name},brand:{businessName:brand?.businessName||"",fromName:brand?.fromName||"",physicalAddress:brand?.physicalAddress||"",sendingDomain:brand?.sendingDomain||"",logoUrl:brand?.logoUrl||""}, integration: { connected: Boolean(resendConfigured()&&identity.fromEmail), fromEmail: identity.fromEmail?fromEmail(identity):null, webhookReady: Boolean(env.RESEND_WEBHOOK_SECRET) } };
+  return { summary, activities: activities.results, tasks: (tasks.results as Record<string,unknown>[]).map(t => ({ ...t, completed: Boolean(t.completed) })), campaigns: campaigns.results, lists, segments:segmentRules.map((segment,index)=>({...segment,recipientCount:counts[index]})), suppressions:suppressions.results, campaignEvents:campaignEvents.results, customFields:(customFields.results as Record<string,unknown>[]).map(field=>({...field,options:JSON.parse(String(field.options||"[]"))})),account:{...account,name},brand:{businessName:brand?.businessName||"",fromName:brand?.fromName||"",physicalAddress:brand?.physicalAddress||"",sendingDomain:brand?.sendingDomain||"",logoUrl:brand?.logoUrl||""}, integration: { connected: Boolean(resendConfigured()&&identity.fromEmail), fromEmail: identity.fromEmail?fromEmail(identity):null, webhookReady: Boolean(env.RESEND_WEBHOOK_SECRET) } };
 }
 // GET ?resource=... is read-only (no writes, including no company reconciliation); the bare GET is the first-screen bootstrap.
 async function readResource(resource:string,url:URL){
@@ -84,7 +86,8 @@ async function syncCampaign(id: number) {
   const campaign = await campaignRow(id); if (!campaign) throw new Error("Campaign not found.");
   const allContacts = await contactRows();
   const audience=String(campaign.audience);const savedSegment=audience.startsWith("segment:")?await env.DB.prepare("SELECT id,name,stage,tag,company,location,subscription,inactivity_days AS inactivityDays FROM segments WHERE id=?").bind(Number(audience.split(":")[1])).first<SegmentRule>():null;
-  const contacts = allContacts.filter(contact => audienceMatch(contact, audience, savedSegment));
+  const listMembers=audience.startsWith("list:")?await listMemberIds(Number(audience.split(":")[1])):null;
+  const contacts = allContacts.filter(contact => audienceMatch(contact, audience, savedSegment, listMembers));
   if (!contacts.length) throw new Error("No subscribed contacts match this audience.");
   const segment = await resend("/segments", { method: "POST", body: JSON.stringify({ name: `CRM · ${campaign.name} · ${new Date().toISOString().slice(0,16)}` }) });
   const segmentId = String(segment.id || ""); if (!segmentId) throw new Error("Resend did not return a segment ID.");
@@ -97,7 +100,7 @@ async function syncCampaign(id: number) {
       const updated = await resend(`/contacts/${encodeURIComponent(String(contact.email))}`, { method: "PATCH", body: JSON.stringify({ unsubscribed: !contact.subscribed }) });
       providerId = String(updated.id || contact.resendId || "");
     }
-    if (audienceMatch(contact, audience, savedSegment)) await resend(`/contacts/${encodeURIComponent(String(contact.email))}/segments/${segmentId}`, { method: "POST" });
+    if (audienceMatch(contact, audience, savedSegment, listMembers)) await resend(`/contacts/${encodeURIComponent(String(contact.email))}/segments/${segmentId}`, { method: "POST" });
     await env.DB.prepare("UPDATE contacts SET resend_id=?, resend_synced_at=datetime('now') WHERE id=?").bind(providerId || null, contact.id).run();
   }
   await env.DB.prepare("UPDATE campaigns SET resend_segment_id=?, recipient_count=?, updated_at=datetime('now') WHERE id=?").bind(segmentId, contacts.length, id).run();
@@ -164,6 +167,13 @@ export async function POST(request: Request) {
     if(body.action==="createSegment"){
       const name=clean(body.name),stage=clean(body.stage,"Any"),tag=clean(body.tag),company=clean(body.company),location=clean(body.location),inactivityDays=Math.max(0,Number(body.inactivityDays)||0);if(!name)return Response.json({error:"Segment name is required."},{status:400});
       const result=await env.DB.prepare("INSERT INTO segments (name,stage,tag,company,location,subscription,inactivity_days,created_at,updated_at) VALUES (?,?,?,?,?,'Subscribed',?,datetime('now'),datetime('now'))").bind(name,stage,tag,company,location,inactivityDays).run();return Response.json({id:result.meta.last_row_id},{status:201});
+    }
+    if(body.action==="removeListMember"){await removeListMember(Number(body.listId),Number(body.contactId));return Response.json({status:"removed"});}
+    if(body.action==="renameList"||body.action==="deleteList"){
+      if(!can(account,"settings.manage"))return Response.json({error:"Settings permission is required."},{status:403});
+      if(body.action==="deleteList"){await deleteList(Number(body.id));return Response.json({status:"deleted"});}
+      try{await renameList(Number(body.id),String(body.name??""))}catch(error){return Response.json({error:error instanceof Error?error.message:"Could not rename the list."},{status:400})}
+      return Response.json({status:"renamed"});
     }
     if(body.action==="deleteSegment"){await env.DB.prepare("DELETE FROM segments WHERE id=?").bind(Number(body.id)).run();return Response.json({status:"deleted"});}
     if(body.action==="suppressContact"){
