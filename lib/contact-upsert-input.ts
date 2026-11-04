@@ -1,5 +1,5 @@
-export type UpsertSource="contact_form"|"epc_inquiry"|"report_download"|"decoder"|"insights_signup";
-export const SOURCE_LABELS:Record<UpsertSource,string>={contact_form:"Contact form",epc_inquiry:"EPC inquiry",report_download:"Report download",decoder:"Decoder",insights_signup:"Insights signup"};
+export type UpsertSource="contact_form"|"epc_inquiry"|"report_download"|"decoder"|"insights_signup"|"pid_waitlist";
+export const SOURCE_LABELS:Record<UpsertSource,string>={contact_form:"Contact form",epc_inquiry:"EPC inquiry",report_download:"Report download",decoder:"Decoder",insights_signup:"Insights signup",pid_waitlist:"PID Tuning Assistant waitlist"};
 export type UpsertInput={email:string;firstName:string;lastName:string;jobTitle:string;company:string;note:{title:string;body:string}|null;source:UpsertSource;reportName:string;consent:boolean|null;consentText:string;referrer:string;utm:{source:string;medium:string;campaign:string;term:string;content:string};lists:string[];submissionId:string};
 const TRUE=new Set(["true","yes","on","1"]),FALSE=new Set(["false","no","off","0"]);
 export function parseUpsertInput(body:unknown):{ok:true;value:UpsertInput}|{ok:false;fields:Record<string,string>}{
