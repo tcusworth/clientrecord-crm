@@ -85,6 +85,14 @@ assert.equal(contact("sup@x.com").subscribed, 0, "suppressed stays unsubscribed"
 sqlite.prepare("INSERT INTO contacts(first_name,last_name,email,subscribed,created_at) VALUES ('Never','Sub','never@x.com',0,datetime('now'))").run();
 await upsertContact(input({ email: "never@x.com", source: "insights_signup", consent: "yes" }), user);
 assert.equal(contact("never@x.com").subscribed, 1, "consent true subscribes a never-subscribed contact");
+// PID Tuning Assistant waitlist (csi-automation.com/pid-tuning-assistant/): the payload the website sends for "Both".
+const wl = parseUpsertInput({ email: "eng@plant.com", fullName: "Pat Engineer", company: "Acme Refining", source: "pid_waitlist", consent: true, consentText: "Joining the waitlist means we'll email you about the PID Tuning Assistant release for your platform.", lists: ["PID Tuning Assistant waitlist: Mac", "PID Tuning Assistant waitlist: Windows"], note: { title: "PID Tuning Assistant waitlist (Both)", body: "platform: Both" }, submissionId: "wl-1" });
+assert.equal(wl.ok, true, JSON.stringify(wl.fields));
+r = await upsertContact(wl.value, user);
+assert.equal(r.action, "created");
+assert.deepEqual(r.lists.map(l => l.name).sort(), ["PID Tuning Assistant waitlist: Mac", "PID Tuning Assistant waitlist: Windows"]);
+const wlc = sqlite.prepare("SELECT first_source, subscribed, company FROM contacts WHERE id=?").get(r.contactId);
+assert.equal(wlc.first_source, "pid_waitlist"); assert.equal(wlc.subscribed, 1); assert.equal(wlc.company, "Acme Refining");
 r = await upsertContact(input({ email: "new@x.com", source: "epc_inquiry" }), user);
 assert.equal(contact("new@x.com").subscribed, 0, "new contact without consent is unsubscribed");
 assert.equal(count("SELECT count(*) FROM tasks WHERE contact_id=?", r.contactId), 1, "epc_inquiry creates a task");

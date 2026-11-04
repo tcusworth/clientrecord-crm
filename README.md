@@ -135,7 +135,7 @@ curl -X POST "https://clientrecordcrm.com/api/v1/contacts/upsert" \
 
 Fields:
 
-- `email` and `source` are required. `source` is one of `contact_form`, `epc_inquiry`, `report_download`, `decoder` or `insights_signup`. `reportName` is required when `source` is `report_download`.
+- `email` and `source` are required. `source` is one of `contact_form`, `epc_inquiry`, `report_download`, `decoder`, `insights_signup` or `pid_waitlist` (the PID Tuning Assistant waitlist on csi-automation.com). `reportName` is required when `source` is `report_download`.
 - `firstName`, `lastName`, `fullName` (split on whitespace to fill a missing first or last name), `jobTitle`, `company`, `note` (`title` and `body`), `consentText`, `referrer` and `utm` are optional. Length limits are in the OpenAPI description.
 - `consent` is a boolean or one of the strings `true`, `yes`, `on`, `1`, `false`, `no`, `off` or `0`.
 - `lists` is up to 10 list names. Missing lists are created, and names match case-insensitively. Lists appear under **Audiences** and can be used as a campaign audience.
